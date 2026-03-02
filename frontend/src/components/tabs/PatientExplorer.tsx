@@ -14,6 +14,7 @@ import {
 import MetricLabel from "@/components/ui/MetricLabel";
 import InfoTooltip from "@/components/ui/InfoTooltip";
 import MetricCue from "@/components/ui/MetricCue";
+import Skeleton from "@/components/ui/Skeleton";
 import {
   getCompositeScoreCue,
   getRegimeCue,
@@ -38,6 +39,7 @@ import {
   ReferenceLine,
   Cell,
 } from "recharts";
+import useStaggeredReveal from "@/hooks/useStaggeredReveal";
 
 /* ═══════════════════════════════════════════════════════════════════════════
    Props
@@ -81,21 +83,15 @@ function computeStateBands(
   return bands;
 }
 
-/** Skeleton block for loading state. */
-function Skeleton({ className = "" }: { className?: string }) {
-  return (
-    <div
-      className={`animate-pulse rounded-xl bg-white/[0.04] ${className}`}
-    />
-  );
-}
-
 /* ═══════════════════════════════════════════════════════════════════════════
    Component
    ═══════════════════════════════════════════════════════════════════════ */
 
 export default function PatientExplorer({ data, loading }: Props) {
   const [notesOpen, setNotesOpen] = useState(false);
+  const metricReveal = useStaggeredReveal(6, { stepMs: 100, threshold: 0.2 });
+  const demographicReveal = useStaggeredReveal(6, { baseDelayMs: 50, stepMs: 70, threshold: 0.2 });
+  const sectionReveal = useStaggeredReveal(8, { baseDelayMs: 120, stepMs: 120, threshold: 0.14 });
 
   const frostyTooltipStyle = {
     background: "var(--color-frost-tooltip-bg)",
@@ -170,24 +166,25 @@ export default function PatientExplorer({ data, loading }: Props) {
   if (loading) {
     return (
       <div className="space-y-6 p-4">
-        <div className="loading-state">
-          <div className="loading-spinner" />
-          <p className="loading-state-text">Loading patient longitudinal profile…</p>
-        </div>
-
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
           {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-24" />
+            <Skeleton key={i} variant="card" className="h-24" />
           ))}
         </div>
 
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-16" />
+            <Skeleton key={i} variant="block" className="h-16" />
           ))}
         </div>
 
-        <Skeleton className="h-56" />
+        <Skeleton variant="card" className="h-44" />
+        <Skeleton variant="card" className="h-72" />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Skeleton variant="card" className="h-56" />
+          <Skeleton variant="card" className="h-56" />
+        </div>
+        <Skeleton variant="card" className="h-60" />
       </div>
     );
   }
@@ -206,6 +203,8 @@ export default function PatientExplorer({ data, loading }: Props) {
   const healthCue = s.health_score != null ? getHealthScoreCue(s.health_score) : null;
   const varCue = s.downside_var_pct != null ? getDownsideVarCue(s.downside_var_pct) : null;
   const csiCue = s.csi_score != null ? getCSICue(s.csi_score) : null;
+  const hasCriticalVar = s.downside_var_pct != null && s.downside_var_pct > 70;
+  const hasCriticalRating = /CCC|CC|C|D/.test(s.rating) || s.rating === "B/CCC";
 
   /* ════════════════════════════════════════════════════════════════════
      Render
@@ -216,7 +215,14 @@ export default function PatientExplorer({ data, loading }: Props) {
       {/* ── 1. Summary Metric Cards ──────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
         {/* Composite Rating */}
-        <div className="frost-panel frost-kpi-card">
+        {(() => {
+          const reveal = metricReveal.getRevealProps(0, "fade");
+          return (
+        <div
+          {...reveal.staggerAttrs}
+          className={`frost-panel frost-kpi-card ${reveal.staggerClass} ${hasCriticalRating ? "metric-pulse-glow-red" : ""}`}
+          style={reveal.staggerStyle}
+        >
           <div
             className="metric-value"
             style={{ color: RATING_COLORS[s.rating] ?? "#B8C5D9" }}
@@ -228,9 +234,14 @@ export default function PatientExplorer({ data, loading }: Props) {
           </div>
           <MetricCue cue={compositeCue} showDetail={false} />
         </div>
+          );
+        })()}
 
         {/* Composite Score */}
-        <div className="frost-panel frost-kpi-card">
+        {(() => {
+          const reveal = metricReveal.getRevealProps(1, "fade");
+          return (
+        <div {...reveal.staggerAttrs} className={`frost-panel frost-kpi-card ${reveal.staggerClass}`} style={reveal.staggerStyle}>
           <div className="metric-value">
             {s.composite_score.toFixed(1)}
           </div>
@@ -239,9 +250,18 @@ export default function PatientExplorer({ data, loading }: Props) {
           </div>
           <MetricCue cue={compositeCue} />
         </div>
+          );
+        })()}
 
         {/* Regime State */}
-        <div className="frost-panel frost-kpi-card">
+        {(() => {
+          const reveal = metricReveal.getRevealProps(2, "fade");
+          return (
+        <div
+          {...reveal.staggerAttrs}
+          className={`frost-panel frost-kpi-card regime-glow ${reveal.staggerClass}`}
+          style={{ ...reveal.staggerStyle, ["--regime-glow-color" as string]: STATE_COLORS[s.regime_state] ?? "#B8C5D9" }}
+        >
           <div
             className="metric-value text-lg"
             style={{ color: STATE_COLORS[s.regime_state] ?? "#B8C5D9" }}
@@ -253,9 +273,14 @@ export default function PatientExplorer({ data, loading }: Props) {
           </div>
           <MetricCue cue={regimeCue} />
         </div>
+          );
+        })()}
 
         {/* Health Score */}
-        <div className="frost-panel frost-kpi-card">
+        {(() => {
+          const reveal = metricReveal.getRevealProps(3, "fade");
+          return (
+        <div {...reveal.staggerAttrs} className={`frost-panel frost-kpi-card ${reveal.staggerClass}`} style={reveal.staggerStyle}>
           <div className="metric-value">
             {s.health_score != null ? s.health_score.toFixed(1) : "—"}
           </div>
@@ -264,9 +289,18 @@ export default function PatientExplorer({ data, loading }: Props) {
           </div>
           {healthCue && <MetricCue cue={healthCue} />}
         </div>
+          );
+        })()}
 
         {/* Downside VaR % */}
-        <div className="frost-panel frost-kpi-card">
+        {(() => {
+          const reveal = metricReveal.getRevealProps(4, "fade");
+          return (
+        <div
+          {...reveal.staggerAttrs}
+          className={`frost-panel frost-kpi-card ${reveal.staggerClass} ${hasCriticalVar ? "metric-pulse-glow-red" : ""}`}
+          style={reveal.staggerStyle}
+        >
           <div className="metric-value">
             {s.downside_var_pct != null
               ? `${s.downside_var_pct.toFixed(1)}%`
@@ -277,9 +311,14 @@ export default function PatientExplorer({ data, loading }: Props) {
           </div>
           {varCue && <MetricCue cue={varCue} />}
         </div>
+          );
+        })()}
 
         {/* CSI Score */}
-        <div className="frost-panel frost-kpi-card">
+        {(() => {
+          const reveal = metricReveal.getRevealProps(5, "fade");
+          return (
+        <div {...reveal.staggerAttrs} className={`frost-panel frost-kpi-card ${reveal.staggerClass}`} style={reveal.staggerStyle}>
           <div className="metric-value">
             {s.csi_score != null ? s.csi_score.toFixed(2) : "—"}
           </div>
@@ -288,6 +327,8 @@ export default function PatientExplorer({ data, loading }: Props) {
           </div>
           {csiCue && <MetricCue cue={csiCue} />}
         </div>
+          );
+        })()}
       </div>
 
       {/* ── 2. Demographics Row ──────────────────────────────────────── */}
@@ -299,10 +340,14 @@ export default function PatientExplorer({ data, loading }: Props) {
           { label: "Total Visits", value: s.total_visits ?? "—" },
           { label: "Lab Draws", value: s.n_lab_draws },
           { label: "Prescriptions", value: s.n_prescriptions },
-        ].map((d) => (
+        ].map((d, idx) => {
+          const reveal = demographicReveal.getRevealProps(idx, "fade");
+          return (
           <div
             key={d.label}
-            className="frost-panel px-4 py-4 text-center"
+            {...reveal.staggerAttrs}
+            className={`frost-panel px-4 py-4 text-center ${reveal.staggerClass}`}
+            style={reveal.staggerStyle}
           >
             <div className="text-lg font-semibold text-text-primary">
               {d.value}
@@ -311,13 +356,20 @@ export default function PatientExplorer({ data, loading }: Props) {
               {d.label}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
+
+      <div className="section-separator" />
 
       {/* ── 3. Comorbidities Panel ───────────────────────────────────── */}
       {data.comorbidities.length > 0 && (
-        <div className="frost-panel px-5 py-4">
-          <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-text-muted">
+        <div
+          {...sectionReveal.getRevealProps(0, "scale").staggerAttrs}
+          className={`frost-panel px-5 py-4 ${sectionReveal.getRevealProps(0, "scale").staggerClass}`}
+          style={sectionReveal.getRevealProps(0, "scale").staggerStyle}
+        >
+          <h3 className="section-heading-accent mb-2 text-sm font-semibold uppercase tracking-wide text-text-muted">
             Comorbidities
           </h3>
           <p className="text-sm leading-relaxed text-text-secondary">
@@ -330,13 +382,18 @@ export default function PatientExplorer({ data, loading }: Props) {
 
       {/* ── 4. Regime Timeline Chart ─────────────────────────────────── */}
       {data.regime_timeline.length > 0 && (
-        <div className="frost-panel p-4">
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-text-muted">
+        <div
+          {...sectionReveal.getRevealProps(1, "scale").staggerAttrs}
+          className={`frost-panel p-4 ${sectionReveal.getRevealProps(1, "scale").staggerClass}`}
+          style={sectionReveal.getRevealProps(1, "scale").staggerStyle}
+        >
+          <h3 className="section-heading-accent mb-3 text-sm font-semibold uppercase tracking-wide text-text-muted">
             <span className="section-label-with-info">
               Patient Regime &mdash; Health Trajectory
               <InfoTooltip metricId="patient.regime.timeline" />
             </span>
           </h3>
+          <div role="img" aria-label="Timeline chart showing patient health score trajectory, state bands, and prescription events">
           <ResponsiveContainer width="100%" height={320}>
             <ComposedChart
               data={data.regime_timeline}
@@ -396,6 +453,9 @@ export default function PatientExplorer({ data, loading }: Props) {
                 strokeWidth={1.5}
                 name="Moving Avg"
                 connectNulls
+                isAnimationActive
+                animationDuration={900}
+                animationBegin={120}
               />
 
               {/* Health Score line */}
@@ -406,9 +466,13 @@ export default function PatientExplorer({ data, loading }: Props) {
                 dot={false}
                 strokeWidth={2}
                 name="Health Score"
+                isAnimationActive
+                animationDuration={1050}
+                animationBegin={220}
               />
             </ComposedChart>
           </ResponsiveContainer>
+          </div>
 
           {/* Legend for state bands */}
           <div className="mt-2 flex flex-wrap gap-3 pl-2">
@@ -438,11 +502,17 @@ export default function PatientExplorer({ data, loading }: Props) {
         </div>
       )}
 
+      <div className="section-separator" />
+
       {/* ── 5. VaR Fan Chart ─────────────────────────────────────────── */}
       {varFanChartData && (
-        <div className="frost-panel p-4">
+        <div
+          {...sectionReveal.getRevealProps(2, "scale").staggerAttrs}
+          className={`frost-panel p-4 ${sectionReveal.getRevealProps(2, "scale").staggerClass}`}
+          style={sectionReveal.getRevealProps(2, "scale").staggerStyle}
+        >
           <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-text-muted">
+            <h3 className="section-heading-accent text-sm font-semibold uppercase tracking-wide text-text-muted">
               <span className="section-label-with-info">
                 Health VaR &mdash; Monte Carlo Deterioration Forecast
                 <InfoTooltip metricId="patient.var.fan" />
@@ -463,6 +533,7 @@ export default function PatientExplorer({ data, loading }: Props) {
             </span>
           </div>
 
+          <div role="img" aria-label="Area chart showing historical score and forecast downside VaR fan range">
           <ResponsiveContainer width="100%" height={280}>
             <AreaChart
               data={varFanChartData.combined}
@@ -495,6 +566,9 @@ export default function PatientExplorer({ data, loading }: Props) {
                 stroke="none"
                 fill="rgba(79,195,247,0.18)"
                 name="p95"
+                isAnimationActive
+                animationDuration={900}
+                animationBegin={120}
               />
               <Area
                 type="monotone"
@@ -502,6 +576,9 @@ export default function PatientExplorer({ data, loading }: Props) {
                 stroke="none"
                 fill="#0B0D14"
                 name="p05"
+                isAnimationActive
+                animationDuration={900}
+                animationBegin={120}
               />
 
               {/* VaR floor */}
@@ -527,6 +604,9 @@ export default function PatientExplorer({ data, loading }: Props) {
                 dot={false}
                 strokeWidth={1.5}
                 name="Median Forecast"
+                isAnimationActive
+                animationDuration={980}
+                animationBegin={220}
               />
 
               {/* Historical score line */}
@@ -538,21 +618,30 @@ export default function PatientExplorer({ data, loading }: Props) {
                 strokeWidth={2}
                 name="Historical"
                 connectNulls
+                isAnimationActive
+                animationDuration={1050}
+                animationBegin={260}
               />
             </AreaChart>
           </ResponsiveContainer>
+          </div>
         </div>
       )}
 
       {/* ── 6. NLP Bar Chart ─────────────────────────────────────────── */}
       {data.nlp_bars.length > 0 && (
-        <div className="frost-panel p-4">
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-text-muted">
+        <div
+          {...sectionReveal.getRevealProps(3, "scale").staggerAttrs}
+          className={`frost-panel p-4 ${sectionReveal.getRevealProps(3, "scale").staggerClass}`}
+          style={sectionReveal.getRevealProps(3, "scale").staggerStyle}
+        >
+          <h3 className="section-heading-accent mb-3 text-sm font-semibold uppercase tracking-wide text-text-muted">
             <span className="section-label-with-info">
               Turkish Clinical NLP &mdash; Visit-Level Language Signal
               <InfoTooltip metricId="patient.nlp.visit_signal" />
             </span>
           </h3>
+          <div role="img" aria-label="Bar chart showing visit-level NLP composite signal over time">
           <ResponsiveContainer width="100%" height={240}>
             <BarChart
               data={data.nlp_bars}
@@ -597,7 +686,7 @@ export default function PatientExplorer({ data, loading }: Props) {
                 formatter={(value: unknown) => [(Number(value)).toFixed(3), "NLP"]}
               />
 
-              <Bar dataKey="nlp_composite" name="NLP Composite" radius={[3, 3, 0, 0]}>
+              <Bar dataKey="nlp_composite" name="NLP Composite" radius={[3, 3, 0, 0]} isAnimationActive animationDuration={960} animationBegin={160}>
                 {data.nlp_bars.map((entry, i) => (
                   <Cell
                     key={i}
@@ -613,13 +702,25 @@ export default function PatientExplorer({ data, loading }: Props) {
               </Bar>
             </BarChart>
           </ResponsiveContainer>
+          </div>
+          <div className="chart-legend-inline" aria-label="NLP signal legend">
+            <span className="chart-legend-label"><span className="chart-legend-swatch" style={{ backgroundColor: CHART_COLORS.positive }} /> Positive Signal</span>
+            <span className="chart-legend-label"><span className="chart-legend-swatch" style={{ backgroundColor: CHART_COLORS.amber }} /> Neutral Signal</span>
+            <span className="chart-legend-label"><span className="chart-legend-swatch" style={{ backgroundColor: CHART_COLORS.negative }} /> Negative Signal</span>
+          </div>
         </div>
       )}
 
+      <div className="section-separator" />
+
       {/* ── 7. NLI Transformer Scores Table ──────────────────────────── */}
       {data.nli_scores.length > 0 && (
-        <div className="frost-panel p-4">
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-text-muted">
+        <div
+          {...sectionReveal.getRevealProps(4, "scale").staggerAttrs}
+          className={`frost-panel p-4 ${sectionReveal.getRevealProps(4, "scale").staggerClass}`}
+          style={sectionReveal.getRevealProps(4, "scale").staggerStyle}
+        >
+          <h3 className="section-heading-accent mb-3 text-sm font-semibold uppercase tracking-wide text-text-muted">
             <span className="section-label-with-info">
               NLI Transformer Scores
               <InfoTooltip metricId="patient.nli.score" />
@@ -699,8 +800,12 @@ export default function PatientExplorer({ data, loading }: Props) {
 
       {/* ── 8. Lab Time Series ───────────────────────────────────────── */}
       {labEntries.length > 0 && (
-        <div className="frost-panel p-4">
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-text-muted">
+        <div
+          {...sectionReveal.getRevealProps(5, "scale").staggerAttrs}
+          className={`frost-panel p-4 ${sectionReveal.getRevealProps(5, "scale").staggerClass}`}
+          style={sectionReveal.getRevealProps(5, "scale").staggerStyle}
+        >
+          <h3 className="section-heading-accent mb-3 text-sm font-semibold uppercase tracking-wide text-text-muted">
             Laboratory Time-Series
           </h3>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -720,6 +825,7 @@ export default function PatientExplorer({ data, loading }: Props) {
                   <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
                     {testName}
                   </div>
+                  <div role="img" aria-label={`Line chart for ${testName} laboratory values over time`}>
                   <ResponsiveContainer width="100%" height={160}>
                     <LineChart
                       data={chartData}
@@ -764,9 +870,13 @@ export default function PatientExplorer({ data, loading }: Props) {
                         strokeWidth={1.5}
                         dot={{ r: 2, fill: CHART_COLORS.accent }}
                         name={testName}
+                        isAnimationActive
+                        animationDuration={900}
+                        animationBegin={140}
                       />
                     </LineChart>
                   </ResponsiveContainer>
+                  </div>
                 </div>
               );
             })}
@@ -776,10 +886,14 @@ export default function PatientExplorer({ data, loading }: Props) {
 
       {/* ── 9. Clinical Notes (Collapsible) ──────────────────────────── */}
       {data.clinical_notes.length > 0 && (
-        <div className="frost-panel">
+        <div
+          {...sectionReveal.getRevealProps(6, "scale").staggerAttrs}
+          className={`frost-panel ${sectionReveal.getRevealProps(6, "scale").staggerClass}`}
+          style={sectionReveal.getRevealProps(6, "scale").staggerStyle}
+        >
           <button
             onClick={() => setNotesOpen((o) => !o)}
-            className="flex w-full items-center justify-between px-5 py-4 text-left transition-colors hover:bg-white/[0.02]"
+            className="focus-ringable flex w-full items-center justify-between px-5 py-4 text-left transition-colors hover:bg-white/[0.02]"
           >
             <h3 className="text-sm font-semibold uppercase tracking-wide text-text-muted">
               Clinical Notes ({data.clinical_notes.length})

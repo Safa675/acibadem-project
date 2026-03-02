@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import type { ValidationData, ValidationExperiment } from "@/lib/types";
 import InfoTooltip from "@/components/ui/InfoTooltip";
+import useStaggeredReveal from "@/hooks/useStaggeredReveal";
 
 interface Props {
   data: ValidationData | null;
@@ -172,6 +173,17 @@ const METHODOLOGY_TABLE = [
 ];
 
 export default function ValidationTab({ data, loading }: Props) {
+  const summaryReveal = useStaggeredReveal(data?.summary?.length ?? 0, {
+    baseDelayMs: 40,
+    stepMs: 50,
+    threshold: 0.12,
+  });
+  const methodologyReveal = useStaggeredReveal(METHODOLOGY_TABLE.length, {
+    baseDelayMs: 80,
+    stepMs: 50,
+    threshold: 0.1,
+  });
+
   if (loading) {
     return (
       <div className="loading-state">
@@ -235,10 +247,14 @@ export default function ValidationTab({ data, loading }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {data.summary.map((row, i) => (
+                {data.summary.map((row, i) => {
+                  const reveal = summaryReveal.getRevealProps(i, "fade");
+                  return (
                   <tr
                     key={i}
-                    className="border-b border-white/[0.03] transition-colors hover:bg-white/[0.02]"
+                    {...reveal.staggerAttrs}
+                    className={`border-b border-white/[0.03] transition-colors hover:bg-white/[0.02] ${reveal.staggerClass}`}
+                    style={reveal.staggerStyle}
                   >
                     {summaryKeys.map((key) => {
                       const val = row[key];
@@ -260,7 +276,8 @@ export default function ValidationTab({ data, loading }: Props) {
                       );
                     })}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -312,17 +329,22 @@ export default function ValidationTab({ data, loading }: Props) {
               </tr>
             </thead>
             <tbody>
-              {METHODOLOGY_TABLE.map((row, i) => (
+              {METHODOLOGY_TABLE.map((row, i) => {
+                const reveal = methodologyReveal.getRevealProps(i, "fade");
+                return (
                 <tr
                   key={i}
-                  className="border-b border-white/[0.03] transition-colors hover:bg-white/[0.02]"
+                  {...reveal.staggerAttrs}
+                  className={`border-b border-white/[0.03] transition-colors hover:bg-white/[0.02] ${reveal.staggerClass}`}
+                  style={reveal.staggerStyle}
                 >
                   <td className="px-5 py-2.5 text-slate-400">{row.finance}</td>
                   <td className="px-5 py-2.5 font-medium text-slate-300">
                     {row.healthcare}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

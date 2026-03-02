@@ -17,6 +17,105 @@
 
 ---
 
+# UI Enhancement — Phase 2 (Eye-Catching Animations & Micro-Interactions)
+
+## Checklist
+
+- [x] Add reusable animated number hook for KPI count-up behavior
+- [x] Add reusable staggered reveal hook with IntersectionObserver-triggered entry
+- [x] Apply KPI count-up and staggered reveals to Cohort Overview KPI and chart surfaces
+- [x] Add sequential section reveals and chart animation timing in Patient Explorer
+- [x] Add staged result/chart entrances in Outcome Predictor
+- [x] Add staggered validation table row reveals in Validation tab
+- [x] Upgrade tab switch transition timing and motion profile in app shell
+- [x] Add pulse/glow emphasis styles for critical risk and regime-state signaling
+- [x] Verify lint/build integrity after motion integration
+
+## Review
+
+- Added `frontend/src/hooks/useCountUp.ts` for requestAnimationFrame-driven ease-out cubic count-up animations.
+- Added `frontend/src/hooks/useStaggeredReveal.ts` to coordinate staggered fade/scale reveal timing and viewport-triggered activation.
+- Updated `frontend/src/components/tabs/CohortOverview.tsx` to animate all existing 5 KPIs and add staged entrance timing for scatter/pie surfaces plus Recharts animation props.
+- Updated `frontend/src/components/tabs/PatientExplorer.tsx` to animate KPI cards, demographic chips, longitudinal sections, and chart primitives, and added critical red pulse/glow for high downside VaR/rating severity and animated regime border glow.
+- Updated `frontend/src/components/tabs/OutcomePredictor.tsx` and `frontend/src/components/tabs/ValidationTab.tsx` for staged panel/table entry and explicit chart animation durations.
+- Updated `frontend/src/app/globals.css` with `fadeSlideUp`, `scaleIn`, `pulseGlow`, `borderGlow`, and stagger utility classes; upgraded `tabPanelIn` transition to fade + 12px slide over 0.4s ease-out.
+- Updated `frontend/src/app/page.tsx` to keep tab transitions reliably retriggered on tab changes.
+- Verified with `npm run lint` (warnings only, no errors) and `npm run build` (success) in `frontend/`.
+
+---
+
+# UI Enhancement — Phase 5 (Accessibility & Final Polish)
+
+## Checklist
+
+- [x] Add chart accessibility labels in Cohort Overview and Patient Explorer
+- [x] Add non-color visual markers to metric cue states for color-blind safety
+- [x] Add visible keyboard focus ring styles across interactive controls
+- [x] Improve tab keyboard navigation by moving focus with arrow/home/end actions
+- [x] Add app footer branding for final production polish
+- [x] Add print-friendly style overrides for dashboard readability
+- [x] Add chatbot focus trap behavior while chat window is open
+- [x] Verify frontend lint/build integrity after accessibility updates
+
+## Review
+
+- Updated `frontend/src/components/tabs/CohortOverview.tsx` with `aria-live` KPI updates, descriptive chart `aria-label`s, and patterned pie fills (`<defs>`) to avoid color-only chart encoding.
+- Updated `frontend/src/components/tabs/PatientExplorer.tsx` with `aria-label`s for major chart containers and keyboard-focus class on collapsible notes control.
+- Updated `frontend/src/components/ui/MetricCue.tsx` and `frontend/src/app/globals.css` to add explicit non-color cue indicators (`OK`, `WARN`, `ALERT`, `INFO`) plus shape markers.
+- Updated `frontend/src/app/page.tsx` to improve tab keyboard navigation focus behavior and added footer text: `Built by Team ILAY · ACUHIT 2026 · Acibadem University`.
+- Updated `frontend/src/components/IlayChatbot.tsx` to trap focus inside chat controls while open.
+- Extended `frontend/src/app/globals.css` with unified focus-visible ring styles, panel-radius normalization via token, and print media overrides.
+- Verified with `npm run lint` (warnings only, no errors) and `npm run build` (success) in `frontend/`.
+
+---
+
+# UI Enhancement — Phase 4 (Chatbot CSS Refactor & Loading States)
+
+## Checklist
+
+- [x] Refactor `IlayChatbot` to class-based styling under `.ilay-*` namespace
+- [x] Replace FAB role-div with semantic button for accessibility
+- [x] Create reusable `Skeleton` UI component with dark shimmer effect
+- [x] Add structured skeleton loading in `CohortOverview`
+- [x] Replace local loading placeholders in `PatientExplorer` with shared skeletons
+- [x] Add full initial-bootstrap dashboard skeleton in `page.tsx`
+- [x] Verify lint/build integrity after refactor
+
+## Review
+
+- Rewrote `frontend/src/components/IlayChatbot.tsx` to remove inline style objects and rely on CSS classes while preserving all existing chat logic and behavior.
+- Added semantic `<button>` for the FAB trigger (`#ilay-fab`) and preserved open/close click-outside behavior.
+- Added `frontend/src/components/ui/Skeleton.tsx` with reusable variants (`line`, `block`, `card`).
+- Replaced spinner-only loading in `frontend/src/components/tabs/CohortOverview.tsx` with a skeleton dashboard section (KPI cards + chart scaffolds).
+- Updated `frontend/src/components/tabs/PatientExplorer.tsx` to use shared skeleton components for loading sections.
+- Updated `frontend/src/app/page.tsx` to render a full dashboard scaffold during initial bootstrap fetch (`patients/cohort`) instead of generic loading text/spinners.
+- Added comprehensive `.ilay-*` chatbot styles and shared `.skeleton*` shimmer styles in `frontend/src/app/globals.css`.
+- Verified with `npm run lint` (warnings only, no errors) and `npm run build` (success) in `frontend/`.
+
+---
+
+# UI Enhancement — Phase 3 (Chart Legends, Visual Polish & How It Works)
+
+## Checklist
+
+- [x] Add inline legends to Cohort Overview pie chart panels
+- [x] Improve chart/section heading hierarchy with accent-side markers
+- [x] Add visual separators between major Patient Explorer sections
+- [x] Add How It Works methodology modal component and header trigger
+- [x] Polish glass depth, dropdown styling, and shared legend/modal styles
+- [x] Verify frontend lint/build integrity after UI polish changes
+
+## Review
+
+- Updated `frontend/src/components/tabs/CohortOverview.tsx` with in-panel legend stacks (color swatch + label + count) for both Rating Distribution and Regime State Distribution, matching API-provided category keys.
+- Updated `frontend/src/components/tabs/PatientExplorer.tsx` with section accent headers, subtle separator lines, and an always-visible NLP signal legend for faster interpretation without hover.
+- Added new `frontend/src/components/HowItWorks.tsx` modal with methodology narrative (finance-to-healthcare mapping, pipeline overview, and innovation points), including overlay close and ESC close behavior.
+- Integrated modal trigger and state into `frontend/src/app/page.tsx` via a new header-level `How It Works` button.
+- Extended `frontend/src/app/globals.css` with legend layouts, modal glass styling, section accents, panel depth polish, and improved glass-theme select/dropdown behavior.
+- Verified with `npm run lint` (warnings only, no errors) and `npm run build` (success) in `frontend/`.
+
+---
+
 # UI Enhancement — Phase 1 (Desktop Labeling & Information Architecture)
 
 ## Checklist
@@ -147,3 +246,24 @@
   - `/tmp/ilay-phase6-tooltip-mean.png`
 - Verified keyboard tab navigation using `ArrowRight`; accessibility tree confirms selected state moved from `Cohort Overview` to `Patient Explorer`.
 - Residual warnings: `@next/next/no-img-element` in existing avatar/chat image usage (`frontend/src/app/page.tsx`, `frontend/src/components/IlayChatbot.tsx`); non-blocking for current phase.
+
+---
+
+# Landing / Splash Screen — Phase 1
+
+## Checklist
+
+- [x] Add full-viewport landing hero component with ILAY branding and value cards
+- [x] Add launch CTA to transition into dashboard experience
+- [x] Gate dashboard rendering behind `showDashboard` state in `frontend/src/app/page.tsx`
+- [x] Add smooth dashboard entry animation (opacity + slight scale)
+- [x] Add landing visual system and animations in `frontend/src/app/globals.css`
+- [x] Verify build integrity after landing integration
+
+## Review
+
+- Created `frontend/src/components/LandingHero.tsx` with animated title/logo treatment, value proposition cards, and a prominent `Launch Dashboard` CTA.
+- Updated `frontend/src/app/page.tsx` to render landing first on every page load and reveal the existing dashboard after user action.
+- Added `dashboard-enter` transition so post-landing content fades/scales in smoothly.
+- Added landing animations and styles in `frontend/src/app/globals.css`, including subtle gradient drift, particle motion, CTA pulse, and responsive layout behavior.
+- Verified with `npm run build` in `frontend/` (success).

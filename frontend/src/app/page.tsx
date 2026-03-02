@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getPatients, getCohort, getPatient, getPatientOutcome, getValidation } from "@/lib/api";
 import type { CohortData, PatientData, OutcomeData, ValidationData } from "@/lib/types";
 import { TAB_BACKGROUNDS } from "@/lib/constants";
@@ -9,10 +9,18 @@ import PatientExplorer from "@/components/tabs/PatientExplorer";
 import OutcomePredictor from "@/components/tabs/OutcomePredictor";
 import ValidationTab from "@/components/tabs/ValidationTab";
 import IlayChatbot from "@/components/IlayChatbot";
+import LandingHero from "@/components/LandingHero";
+import HowItWorks from "@/components/HowItWorks";
+import Skeleton from "@/components/ui/Skeleton";
 
 const TAB_LABELS = ["Cohort Overview", "Patient Explorer", "Outcome Predictor", "Validation"];
 
 export default function Home() {
+  const [showDashboard, setShowDashboard] = useState(false);
+  const [showHowItWorks, setShowHowItWorks] = useState(false);
+  const [tabTransitionKey, setTabTransitionKey] = useState(0);
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
   // ── Tab state ──────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState(0);
 
@@ -36,6 +44,7 @@ export default function Home() {
 
   // ── Initial load: patients → cohort → auto-select first ────────────────
   useEffect(() => {
+    if (!showDashboard) return;
     let cancelled = false;
 
     async function init() {
@@ -68,11 +77,11 @@ export default function Home() {
 
     init();
     return () => { cancelled = true; };
-  }, []);
+  }, [showDashboard]);
 
   // ── When selected patient changes: fetch patient + outcome ─────────────
   useEffect(() => {
-    if (selectedPatientId === null) return;
+    if (!showDashboard || selectedPatientId === null) return;
     let cancelled = false;
 
     async function fetchPatientDetails() {
@@ -104,11 +113,11 @@ export default function Home() {
 
     fetchPatientDetails();
     return () => { cancelled = true; };
-  }, [selectedPatientId]);
+  }, [selectedPatientId, showDashboard]);
 
   // ── Lazy-load validation data when tab 3 is selected ───────────────────
   useEffect(() => {
-    if (activeTab !== 3 || validationData !== null) return;
+    if (!showDashboard || activeTab !== 3 || validationData !== null) return;
     let cancelled = false;
 
     async function fetchValidation() {
@@ -130,7 +139,7 @@ export default function Home() {
 
     fetchValidation();
     return () => { cancelled = true; };
-  }, [activeTab, validationData]);
+  }, [activeTab, validationData, showDashboard]);
 
   // ── Handlers ───────────────────────────────────────────────────────────
   const handlePatientChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -142,22 +151,39 @@ export default function Home() {
   }, []);
 
   const handleTabKeyDown = useCallback((e: React.KeyboardEvent<HTMLButtonElement>, idx: number) => {
+    const focusTab = (nextIdx: number) => {
+      setActiveTab(nextIdx);
+      requestAnimationFrame(() => {
+        tabRefs.current[nextIdx]?.focus();
+      });
+    };
+
     if (e.key === "ArrowRight") {
       e.preventDefault();
-      setActiveTab((idx + 1) % TAB_LABELS.length);
+      focusTab((idx + 1) % TAB_LABELS.length);
     } else if (e.key === "ArrowLeft") {
       e.preventDefault();
-      setActiveTab((idx - 1 + TAB_LABELS.length) % TAB_LABELS.length);
+      focusTab((idx - 1 + TAB_LABELS.length) % TAB_LABELS.length);
     } else if (e.key === "Home") {
       e.preventDefault();
-      setActiveTab(0);
+      focusTab(0);
     } else if (e.key === "End") {
       e.preventDefault();
-      setActiveTab(TAB_LABELS.length - 1);
+      focusTab(TAB_LABELS.length - 1);
     }
   }, []);
 
+  useEffect(() => {
+    setTabTransitionKey((prev) => prev + 1);
+  }, [activeTab]);
+
   // ── Error screen ───────────────────────────────────────────────────────
+  if (!showDashboard) {
+    return <LandingHero onEnter={() => setShowDashboard(true)} />;
+  }
+
+  const isInitialBootstrap = loadingPatients || (loadingCohort && cohortData === null);
+
   if (error) {
     return (
       <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0B0D14", color: "#E74C3C" }}>
@@ -177,7 +203,7 @@ export default function Home() {
 
   // ── Render ─────────────────────────────────────────────────────────────
   return (
-    <>
+    <div className="dashboard-enter">
       {/* ── Background overlay ──────────────────────────────────────────── */}
       <div
         className="bg-overlay"
@@ -203,6 +229,13 @@ export default function Home() {
                 AI Clinical Risk Intelligence &mdash; ACUHIT 2026 &mdash; Acibadem University
               </div>
             </div>
+            <button
+              type="button"
+              className="glass app-how-button"
+              onClick={() => setShowHowItWorks(true)}
+            >
+              How It Works
+            </button>
           </div>
 
           {/* Patient selector */}
@@ -240,6 +273,9 @@ export default function Home() {
               key={label}
               onClick={() => handleTabChange(idx)}
               className={`app-tab-button ${activeTab === idx ? "tab-active" : ""}`}
+              ref={(el) => {
+                tabRefs.current[idx] = el;
+              }}
               role="tab"
               aria-selected={activeTab === idx}
               aria-controls={`panel-${idx}`}
@@ -254,43 +290,67 @@ export default function Home() {
 
         {/* ── Tab content ─────────────────────────────────────────────────── */}
         <main className="frost-canvas app-main" role="tabpanel" id={`panel-${activeTab}`} aria-labelledby={`tab-${activeTab}`}>
-          <div key={activeTab} className="tab-panel-animate">
-            {activeTab === 0 && (
-              <CohortOverview
-                data={cohortData}
-                loading={loadingCohort}
-              />
-            )}
+          {isInitialBootstrap ? (
+            <div className="space-y-5">
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+                {Array.from({ length: 5 }).map((_, idx) => (
+                  <Skeleton key={idx} variant="card" className="h-[114px]" />
+                ))}
+              </div>
+              <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+                <Skeleton variant="card" className="h-[320px]" />
+                <div className="space-y-4">
+                  <Skeleton variant="card" className="h-[152px]" />
+                  <Skeleton variant="card" className="h-[152px]" />
+                </div>
+              </div>
+              <Skeleton variant="card" className="h-[240px]" />
+            </div>
+          ) : (
+            <div key={`${activeTab}-${tabTransitionKey}`} className="tab-panel-animate">
+              {activeTab === 0 && (
+                <CohortOverview
+                  data={cohortData}
+                  loading={loadingCohort}
+                />
+              )}
 
-            {activeTab === 1 && (
-              <PatientExplorer
-                data={patientData}
-                loading={loadingPatient}
-              />
-            )}
+              {activeTab === 1 && (
+                <PatientExplorer
+                  data={patientData}
+                  loading={loadingPatient}
+                />
+              )}
 
-            {activeTab === 2 && (
-              <OutcomePredictor
-                data={outcomeData}
-                loading={loadingOutcome}
-                selectedPatientId={selectedPatientId ?? 0}
-              />
-            )}
+              {activeTab === 2 && (
+                <OutcomePredictor
+                  data={outcomeData}
+                  loading={loadingOutcome}
+                  selectedPatientId={selectedPatientId ?? 0}
+                />
+              )}
 
-            {activeTab === 3 && (
-              <ValidationTab
-                data={validationData}
-                loading={loadingValidation}
-              />
-            )}
-          </div>
+              {activeTab === 3 && (
+                <ValidationTab
+                  data={validationData}
+                  loading={loadingValidation}
+                />
+              )}
+            </div>
+          )}
         </main>
+
+        <footer className="app-footer">
+          Built by Team ILAY · ACUHIT 2026 · Acibadem University
+        </footer>
       </div>
 
       {/* ── Floating chatbot ────────────────────────────────────────────── */}
       {selectedPatientId !== null && (
         <IlayChatbot patientId={selectedPatientId} />
       )}
-    </>
+
+      <HowItWorks open={showHowItWorks} onClose={() => setShowHowItWorks(false)} />
+    </div>
   );
 }

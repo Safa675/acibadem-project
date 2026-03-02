@@ -19,6 +19,7 @@ import { csiColor } from "@/lib/utils";
 import InfoTooltip from "@/components/ui/InfoTooltip";
 import MetricCue from "@/components/ui/MetricCue";
 import { getCSICue } from "@/lib/interpretation";
+import useStaggeredReveal from "@/hooks/useStaggeredReveal";
 
 interface Props {
   data: OutcomeData | null;
@@ -192,6 +193,8 @@ function ChartTooltipContent({
 /* ---------- Main Component ---------- */
 
 export default function OutcomePredictor({ data, loading, selectedPatientId }: Props) {
+  const reveal = useStaggeredReveal(4, { baseDelayMs: 40, stepMs: 140, threshold: 0.15 });
+
   if (loading) {
     return (
       <div className="loading-state">
@@ -212,7 +215,11 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
   return (
     <div className="space-y-8">
       {/* ---- Row 1: Gauge + Narrative ---- */}
-      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
+      <div
+        {...reveal.getRevealProps(0, "scale").staggerAttrs}
+        className={`grid gap-6 lg:grid-cols-[280px_1fr] ${reveal.getRevealProps(0, "scale").staggerClass}`}
+        style={reveal.getRevealProps(0, "scale").staggerStyle}
+      >
         {/* CSI Gauge */}
         <div className="frost-panel flex flex-col items-center justify-center p-6">
           <CSIGauge score={data.csi.score} tier={data.csi.tier} />
@@ -223,7 +230,11 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
       </div>
 
       {/* ---- CSI Feature Decomposition ---- */}
-      <div className="frost-panel p-5">
+      <div
+        {...reveal.getRevealProps(1, "scale").staggerAttrs}
+        className={`frost-panel p-5 ${reveal.getRevealProps(1, "scale").staggerClass}`}
+        style={reveal.getRevealProps(1, "scale").staggerStyle}
+      >
         <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-300">
           <span className="section-label-with-info">
             CSI Feature Decomposition
@@ -249,7 +260,7 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
               tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
             />
             <Tooltip content={<ChartTooltipContent />} />
-            <Bar dataKey="value" radius={[0, 4, 4, 0]} maxBarSize={22}>
+            <Bar dataKey="value" radius={[0, 4, 4, 0]} maxBarSize={22} isAnimationActive animationDuration={980} animationBegin={140}>
               {data.feature_bar.map((entry, idx) => (
                 <Cell key={idx} fill={csiColor(entry.value)} />
               ))}
@@ -266,7 +277,11 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
       </div>
 
       {/* ---- CSI Cohort Ranking ---- */}
-      <div className="frost-panel p-5">
+      <div
+        {...reveal.getRevealProps(2, "scale").staggerAttrs}
+        className={`frost-panel p-5 ${reveal.getRevealProps(2, "scale").staggerClass}`}
+        style={reveal.getRevealProps(2, "scale").staggerStyle}
+      >
         <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-300">
           <span className="section-label-with-info">
             CSI Cohort Ranking
@@ -292,7 +307,7 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
             />
             <YAxis tick={{ fill: CHART_COLORS.text, fontSize: 11 }} />
             <Tooltip content={<ChartTooltipContent />} />
-            <Bar dataKey="csi_score" radius={[4, 4, 0, 0]} maxBarSize={28}>
+            <Bar dataKey="csi_score" radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive animationDuration={1050} animationBegin={180}>
               {data.cohort_ranking.map((entry, idx) => (
                 <Cell
                   key={idx}
@@ -306,7 +321,11 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
       </div>
 
       {/* ---- Feature Correlation (Spearman) ---- */}
-      <div className="frost-panel p-5">
+      <div
+        {...reveal.getRevealProps(3, "scale").staggerAttrs}
+        className={`frost-panel p-5 ${reveal.getRevealProps(3, "scale").staggerClass}`}
+        style={reveal.getRevealProps(3, "scale").staggerStyle}
+      >
         <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-300">
           <span className="section-label-with-info">
             Feature &rarr; Total Visit Count (Spearman &rho;)
@@ -340,7 +359,7 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
             />
             <Tooltip content={<ChartTooltipContent />} />
             <ReferenceLine x={0} stroke={CHART_COLORS.text} strokeWidth={1} />
-            <Bar dataKey="spearman_r" radius={[0, 4, 4, 0]} maxBarSize={22}>
+            <Bar dataKey="spearman_r" radius={[0, 4, 4, 0]} maxBarSize={22} isAnimationActive animationDuration={980} animationBegin={210}>
               {data.feature_correlations.map((entry, idx) => (
                 <Cell
                   key={idx}
