@@ -217,7 +217,7 @@ export default function Home() {
           {/* Brand */}
           <div className="app-brand">
             <img
-              src="/images/ilay_avatar_cropped.png"
+              src="/images/j2.png"
               alt="ILAY Avatar"
               className="app-brand-avatar"
             />

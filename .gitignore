@@ -32,3 +32,6 @@ frontend/*.tsbuildinfo
 
 # Data
 *.ods
+
+# Tasks
+tasks

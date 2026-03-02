@@ -3,14 +3,21 @@ chatbot.py
 ILAY — OpenRouter-powered chatbot with patient data awareness.
 
 Uses the OpenRouter API (OpenAI-compatible) to answer user questions about
-the platform.
+the platform. Supports async streaming via httpx.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import os
-import requests
+import time
 from pathlib import Path
+from typing import AsyncIterator
+
+import httpx
+
+logger = logging.getLogger("ilay.chatbot")
 
 # Load .env from the project root (two levels up from src/)
 try:
@@ -21,10 +28,10 @@ except ImportError:
     pass  # python-dotenv not installed — fall back to environment variables
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL = "qwen/qwen3.5-flash-02-23"
+MODEL = "google/gemini-2.0-flash-001"
 
 SYSTEM_PROMPT = """\
-You are ILAY. And this is your platform its an AI-powered clinical risk \
+You are ILAY. And this is your platform — an AI-powered clinical risk \
 intelligence platform developed by Acıbadem University for the ACUHIT Hackathon 2026.
 
 Your job is to help doctors, nurses, and clinical staff understand dashboard metrics \
@@ -47,7 +54,7 @@ METRICS — FULL REFERENCE
    • Composite score from lab results + vital signs.
    • Each lab test is z-scored against its reference range.
    • Vitals (BP, pulse, SpO2) normalized using clinical standards.
-   • Formula: 100 − (weighted mean abnormality, scaled 0–100)
+   • Formula: 100 × exp(−0.25 × mean_z) where mean_z is weighted organ-system z-score
    • 100 = perfectly normal, 0 = maximally abnormal
    • Vital weight: 45% (based on NEWS AUROC 0.867)
    • Turkish population reference ranges (Ozarda 2014, PMID: 25153598)
@@ -56,10 +63,10 @@ METRICS — FULL REFERENCE
 2) PatientRegime™ — 4 states
    • Classifies the patient's health trajectory over time.
    • States:
-     - 🟢 Stable: Score steady, low volatility
-     - 🟡 Recovering: Upward trend, score improving
-     - 🟠 Deteriorating: Downward trend, score declining
-     - 🔴 Critical: Steep decline + high volatility
+     - Stable: Score steady, low volatility
+     - Recovering: Upward trend, score improving
+     - Deteriorating: Downward trend, score declining
+     - Critical: Steep decline + high volatility
    • Uses 3-draw moving average + rolling standard deviation
    • Finance analogy: market regime detection (bull/bear/stress)
    • Requires minimum 4 lab draws; fewer → "Insufficient Data"
@@ -68,10 +75,10 @@ METRICS — FULL REFERENCE
    • "With 95% confidence, health score won't fall below X in the next 3 lab-draw cycles."
    • 3,000 Monte Carlo bootstrap iterations
    • Risk tiers:
-     - 🟢 GREEN (VaR > +5%): Stable or improving
-     - 🟡 YELLOW (0% to +5%): Slight risk, monitor
-     - 🟠 ORANGE (−10% to 0%): Moderate risk, review within 24h
-     - 🔴 RED (< −10%): High risk, prioritize intervention
+     - GREEN (VaR > +5%): Stable or improving
+     - YELLOW (0% to +5%): Slight risk, monitor
+     - ORANGE (−10% to 0%): Moderate risk, review within 24h
+     - RED (< −10%): High risk, prioritize intervention
    • Fan chart shows 5th–95th percentile confidence band
    • Finance analogy: Value at Risk (VaR)
 
@@ -100,13 +107,15 @@ METRICS — FULL REFERENCE
 
 6) CSI — Clinical Severity Index — 0 to 100
    • Predicts healthcare utilization intensity.
-   • 6 features:
-     - Health Score Trend (25%): Negative slope → higher severity
-     - Lab Volatility (20%): High std dev → instability
-     - Critical Regime Fraction (20%): % time in Critical state
-     - NLP Signal (15%): Negative language → deterioration
-     - Prescription Intensity (10%): High Rx velocity → active disease
-     - Comorbidity Burden (10%): ICD comorbidities present
+   • 6 features with exact weights (each sub-score normalized 0–100 before weighting):
+     - Health Score Trend (25%): slope mapped so −5/obs → 100, +5/obs → 0
+     - Lab Volatility (20%): std dev mapped so 0 → 0, 20+ → 100
+     - Critical Regime Fraction (20%): % time in Critical state × 100
+     - NLP Signal (15%): NLP score mapped so −1 → 100, +1 → 0
+     - Prescription Intensity (10%): Rx velocity mapped so 0 → 0, 10+/mo → 100
+     - Comorbidity Burden (10%): comorbidity count mapped so 0 → 0, 4+ → 100
+   • The CURRENT PATIENT DATA section includes the exact point contribution of EACH factor
+     (feature_contributions dict). USE THESE NUMBERS when explaining the CSI.
    • Tiers: LOW (0–25), MODERATE (25–50), HIGH (50–75), CRITICAL (75–100)
    • 0 = minimal burden, 100 = maximum burden
 
@@ -135,18 +144,34 @@ GENERAL INFORMATION
   - Earnings Call NLP → Turkish clinical note NLP
 
 RESPONSE RULES (YOU MUST FOLLOW THESE STRICTLY):
-• Write like a real person texting a colleague — casual, warm, no fluff.
+• Write like a real person — a knowledgeable clinician speaking to a colleague. Casual, precise, no fluff.
 • Do NOT use **bold** at all. Zero asterisks. Write plain text only.
 • Do NOT use markdown tables, headers (##), horizontal rules (---), or any structured formatting.
 • Do NOT start messages with filler like "Great question!", "Sure!", "Here's the breakdown:", "Let me explain".
-• Keep it SHORT: 2-5 sentences max. Only go longer if the user explicitly asks for detail.
-• Weave numbers into natural sentences: "their score is 72 right now" not "Health Score: 72".
+• Adapt length to complexity:
+  - Simple factual question (what is X, what's the score) → 1-3 sentences, direct.
+  - Technical or analytical question (why is X, what's driving Y, explain Z) → go as deep as needed.
+    Use exact numbers from the patient data. Walk through each factor if relevant. Don't cut the answer short.
+  - Conversational chitchat → keep it very short.
+• Always use the actual numbers from CURRENT PATIENT DATA. Never speak in vague generalities
+  when you have exact values — say "the health trend is contributing 18.4 points to the CSI"
+  not "the health trend is a factor".
+• Sound human. Imagine you're a doctor leaning over to a colleague saying "hey so basically..."
 • No bullet points unless listing 3+ genuinely separate items.
 • Max 1 emoji per message, only for risk tier color if relevant. Usually zero emoji.
-• Sound human. Imagine you're a doctor leaning over to a colleague saying "hey so basically..."
 • Do NOT give medical treatment advice — only explain what the data shows.
 • If comparing two metrics, explain the difference in one flowing paragraph, not in sections.
 """
+
+
+_CSI_FACTOR_LABELS = {
+    "health_trend": "Health Score Trend (25%)",
+    "lab_volatility": "Lab Volatility (20%)",
+    "critical_fraction": "Critical Regime Fraction (20%)",
+    "nlp_signal": "NLP Signal (15%)",
+    "prescription_intensity": "Prescription Intensity (10%)",
+    "comorbidity_burden": "Comorbidity Burden (10%)",
+}
 
 
 def build_patient_context(
@@ -212,14 +237,25 @@ def build_patient_context(
         lines.append(f"  VaR %: {var_result.var_pct:.1f}%")
         lines.append(f"  Risk Tier: {var_result.risk_tier} — {var_result.risk_label}")
 
-    # CSI
+    # CSI — full breakdown including per-factor contributions
     if profile:
         lines.append(f"\n🎯 CLINICAL SEVERITY INDEX (CSI):")
         lines.append(f"  CSI Score: {profile.csi_score:.1f}/100")
         lines.append(f"  CSI Tier: {profile.csi_tier}")
+        lines.append(f"  CSI Label: {getattr(profile, 'csi_label', 'N/A')}")
         lines.append(f"  Critical Episodes: {profile.n_critical_episodes}")
         lines.append(f"  Critical Fraction: {profile.critical_fraction:.1%}")
         lines.append(f"  Mean NLP Composite: {profile.mean_nlp_composite:.3f}")
+
+        # Per-factor weighted point contributions — the key data for precise explanations
+        feature_contribs = getattr(profile, "feature_contributions", {})
+        if feature_contribs:
+            lines.append(
+                f"  CSI Factor Contributions (weighted points out of total {profile.csi_score:.1f}):"
+            )
+            for key, label in _CSI_FACTOR_LABELS.items():
+                val = feature_contribs.get(key, 0.0)
+                lines.append(f"    - {label}: {val:.2f} pts")
 
     # Comorbidities detail
     if ana_df is not None:
@@ -294,56 +330,115 @@ def build_patient_context(
     return "\n".join(lines)
 
 
-def get_chat_response(messages: list[dict], patient_context: str = "") -> str:
-    """
-    Send messages to OpenRouter and return the assistant's reply.
-
-    Parameters
-    ----------
-    messages : list[dict]
-        OpenAI-format messages, e.g. [{"role": "user", "content": "..."}].
-        The system prompt is prepended automatically.
-    patient_context : str
-        A text block with the current patient's data, injected into the system prompt.
-
-    Returns
-    -------
-    str
-        The assistant's text reply.
-    """
-    api_key = os.environ.get("OPENROUTER_API_KEY", "")
-    if not api_key:
-        return "⚠️ OpenRouter API key not found. Please set the `OPENROUTER_API_KEY` environment variable in your `.env` file."
-
+def _build_messages(messages: list[dict], patient_context: str) -> list[dict]:
+    """Prepend system prompt + patient context to the message list."""
     system_content = SYSTEM_PROMPT
     if patient_context:
         system_content += "\n\n" + patient_context
+    return [{"role": "system", "content": system_content}] + messages
 
-    full_messages = [{"role": "system", "content": system_content}] + messages
+
+def _get_api_key() -> str | None:
+    return os.environ.get("OPENROUTER_API_KEY", "").strip() or None
+
+
+async def stream_chat_response(
+    messages: list[dict], patient_context: str = ""
+) -> AsyncIterator[str]:
+    """
+    Async generator that streams text tokens from OpenRouter using SSE.
+
+    Yields plain text chunks as they arrive. Yields an error string prefixed
+    with "⚠️" on failure.
+    """
+    api_key = _get_api_key()
+    if not api_key:
+        logger.error("OPENROUTER_API_KEY not set — cannot call LLM")
+        yield "⚠️ OpenRouter API key not found. Set OPENROUTER_API_KEY in your .env file."
+        return
+
+    full_messages = _build_messages(messages, patient_context)
+
+    msg_count = len(full_messages)
+    ctx_len = len(patient_context)
+    logger.info(
+        "LLM REQUEST | model=%s | msgs=%d | context_chars=%d",
+        MODEL,
+        msg_count,
+        ctx_len,
+    )
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://ilay.app",
+        "X-Title": "ILAY",
+    }
+    payload = {
+        "model": MODEL,
+        "messages": full_messages,
+        "max_tokens": 800,
+        "temperature": 0.4,
+        "stream": True,
+    }
+
+    t0 = time.perf_counter()
+    token_count = 0
 
     try:
-        response = requests.post(
-            OPENROUTER_BASE_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://ilay.app",
-                "X-Title": "ILAY",
-            },
-            json={
-                "model": MODEL,
-                "messages": full_messages,
-                "max_tokens": 420,
-                "temperature": 0.4,
-            },
-            timeout=20,
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream(
+                "POST",
+                OPENROUTER_BASE_URL,
+                headers=headers,
+                json=payload,
+            ) as response:
+                if response.status_code != 200:
+                    body = await response.aread()
+                    error_text = body.decode()[:500]
+                    logger.error(
+                        "LLM API ERROR | status=%d | body=%s",
+                        response.status_code,
+                        error_text,
+                    )
+                    yield f"⚠️ API error {response.status_code}: {error_text[:200]}"
+                    return
+
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0]["delta"]
+                        token = delta.get("content")
+                        if token:
+                            token_count += 1
+                            yield token
+                    except (json.JSONDecodeError, KeyError, IndexError) as exc:
+                        logger.warning(
+                            "LLM CHUNK PARSE ERROR | data=%r | error=%s",
+                            data[:200],
+                            exc,
+                        )
+                        continue
+
+        elapsed = time.perf_counter() - t0
+        logger.info(
+            "LLM RESPONSE OK | tokens=%d | elapsed=%.2fs",
+            token_count,
+            elapsed,
         )
-        response.raise_for_status()
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
-    except requests.exceptions.Timeout:
-        return "⚠️ API request timed out. Please try again."
-    except requests.exceptions.RequestException as e:
-        return f"⚠️ API error: {str(e)}"
-    except (KeyError, IndexError):
-        return "⚠️ Unexpected response from API."
+
+    except httpx.TimeoutException:
+        logger.error(
+            "LLM TIMEOUT after %.1fs | tokens_before_timeout=%d",
+            time.perf_counter() - t0,
+            token_count,
+        )
+        yield "\n⚠️ Request timed out. Please try again."
+    except httpx.RequestError as exc:
+        logger.error("LLM NETWORK ERROR | error=%s", exc, exc_info=True)
+        yield f"\n⚠️ Network error: {exc}"

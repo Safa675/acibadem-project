@@ -6,6 +6,8 @@ Serves pre-computed data to the Next.js frontend.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import sys
 import warnings
@@ -20,6 +22,7 @@ sys.path.insert(0, str(_THIS_DIR))
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import pandas as pd
 import numpy as np
@@ -40,7 +43,7 @@ from src import (
     run_all_validations,
     validation_summary_df,
 )
-from src.chatbot import get_chat_response, build_patient_context
+from src.chatbot import stream_chat_response, build_patient_context
 from src.health_var import compute_health_var
 
 # Force-load NLP transformer at startup
@@ -51,6 +54,22 @@ if _nlp_mod._transformer_available is None:
     _load_transformer()
 
 # ── App ──────────────────────────────────────────────────────────────────────
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+
+LOG_DIR = _THIS_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.FileHandler(LOG_DIR / "ilay.log", encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger("ilay")
 
 app = FastAPI(title="ILAY API", version="1.0.0")
 
@@ -681,35 +700,94 @@ def get_validation():
 
 
 @app.post("/api/chat")
-def chat(req: ChatRequest):
-    """ILAY chatbot endpoint."""
-    ctx = _load_pipeline()
-    pid = req.patient_id
+async def chat(req: ChatRequest):
+    """ILAY chatbot SSE streaming endpoint."""
+    import time
 
-    profile = ctx["profiles"].get(pid)
-    composites_df = ctx["composites"]
-    comp_row = (
-        composites_df[composites_df["patient_id"] == pid]
-        if not composites_df.empty
-        else None
+    user_text = ""
+    if req.messages:
+        last_user = [m for m in req.messages if m.get("role") == "user"]
+        user_text = last_user[-1].get("content", "")[:120] if last_user else ""
+
+    logger.info(
+        "CHAT START | patient=%s | msgs=%d | user=%r",
+        req.patient_id,
+        len(req.messages),
+        user_text,
     )
-    regimes = ctx["regimes"]
-    regime_r = regimes.get(pid)
-    _lks = regime_r.last_known_state() if regime_r else None
-    regime_state = _lks.value if _lks is not None else "Insufficient Data"
-    var_result = ctx["var_results"].get(pid)
+    t0 = time.perf_counter()
 
-    patient_context = build_patient_context(
-        patient_id=pid,
-        profile=profile,
-        comp_row=comp_row,
-        regime_state=regime_state,
-        var_result=var_result,
-        nlp_results=ctx["nlp_results"],
-        ana_df=ctx["ana_df"],
-        lab_df=ctx["lab_df"],
-        rec_df=ctx["rec_df"],
+    try:
+        ctx = _load_pipeline()
+        pid = req.patient_id
+
+        profile = ctx["profiles"].get(pid)
+        composites_df = ctx["composites"]
+        comp_row = (
+            composites_df[composites_df["patient_id"] == pid]
+            if not composites_df.empty
+            else None
+        )
+        regimes = ctx["regimes"]
+        regime_r = regimes.get(pid)
+        _lks = regime_r.last_known_state() if regime_r else None
+        regime_state = _lks.value if _lks is not None else "Insufficient Data"
+        var_result = ctx["var_results"].get(pid)
+
+        patient_context = build_patient_context(
+            patient_id=pid,
+            profile=profile,
+            comp_row=comp_row,
+            regime_state=regime_state,
+            var_result=var_result,
+            nlp_results=ctx["nlp_results"],
+            ana_df=ctx["ana_df"],
+            lab_df=ctx["lab_df"],
+            rec_df=ctx["rec_df"],
+        )
+    except Exception as exc:
+        logger.error(
+            "CHAT CONTEXT BUILD FAILED | patient=%s | error=%s",
+            req.patient_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500, detail=f"Failed to build patient context: {exc}"
+        )
+
+    async def sse_generator():
+        token_count = 0
+        try:
+            async for token in stream_chat_response(req.messages, patient_context):
+                token_count += 1
+                # JSON-encode tokens so newlines / special chars don't break SSE framing
+                yield f"data: {json.dumps(token)}\n\n"
+        except Exception as exc:
+            logger.error(
+                "CHAT STREAM ERROR | patient=%s | tokens_sent=%d | error=%s",
+                pid,
+                token_count,
+                exc,
+                exc_info=True,
+            )
+            error_payload = json.dumps(f"\n⚠️ Stream error: {exc}")
+            yield f"data: {error_payload}\n\n"
+        finally:
+            elapsed = time.perf_counter() - t0
+            logger.info(
+                "CHAT END | patient=%s | tokens=%d | elapsed=%.2fs",
+                pid,
+                token_count,
+                elapsed,
+            )
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
-
-    reply = get_chat_response(req.messages, patient_context)
-    return {"reply": reply}

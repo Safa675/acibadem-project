@@ -207,13 +207,13 @@ export default function ValidationTab({ data, loading }: Props) {
       : [];
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* ---- Title ---- */}
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight text-white">
+      <div className="tab-intro tab-intro-frost frost-panel">
+        <h2 className="tab-intro-title">
           Retrospective Validation
         </h2>
-        <p className="mt-1 text-sm text-slate-400">
+        <p className="tab-intro-subtitle">
           5 statistical experiments validating the clinical risk model against
           retrospective patient data.
         </p>

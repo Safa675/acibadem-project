@@ -33,7 +33,7 @@ export default function LandingHero({ onEnter }: LandingHeroProps) {
 
       <div className="landing-hero-content">
         <div className="landing-logo-wrap">
-          <img src="/images/ilay_avatar_cropped.png" alt="ILAY avatar" className="landing-logo" />
+          <img src="/images/j2.png" alt="ILAY avatar" className="landing-logo" />
           <h1 className="landing-title">ILAY</h1>
         </div>
 

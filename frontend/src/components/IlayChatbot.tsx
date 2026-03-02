@@ -9,7 +9,7 @@ interface Props {
   patientId: number;
 }
 
-const AVATAR_SRC = "/images/ilay_avatar_cropped.png";
+const AVATAR_SRC = "/images/j2.png";
 const SESSION_KEY = "ilayChatOpen";
 
 const SUGGESTED_PROMPTS = [
@@ -119,16 +119,36 @@ export default function IlayChatbot({ patientId }: Props) {
       setInputValue("");
       setIsLoading(true);
 
+      // Add a placeholder assistant message that will be filled token-by-token
+      const placeholderMsg: ChatMessage = { role: "assistant", content: "" };
+      setMessages((prev) => [...prev, placeholderMsg]);
+
       try {
-        const { reply } = await sendChatMessage(updatedMessages, patientId);
-        const assistantMsg: ChatMessage = { role: "assistant", content: reply };
-        setMessages((prev) => [...prev, assistantMsg]);
+        await sendChatMessage(updatedMessages, patientId, (token: string) => {
+          setMessages((prev) => {
+            const updated = [...prev];
+            const last = updated[updated.length - 1];
+            if (last?.role === "assistant") {
+              updated[updated.length - 1] = {
+                ...last,
+                content: last.content + token,
+              };
+            }
+            return updated;
+          });
+        });
       } catch {
-        const errorMsg: ChatMessage = {
-          role: "assistant",
-          content: "Sorry, I encountered an error. Please try again.",
-        };
-        setMessages((prev) => [...prev, errorMsg]);
+        setMessages((prev) => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last?.role === "assistant" && last.content === "") {
+            updated[updated.length - 1] = {
+              ...last,
+              content: "Sorry, I encountered an error. Please try again.",
+            };
+          }
+          return updated;
+        });
       } finally {
         setIsLoading(false);
       }
@@ -192,7 +212,7 @@ export default function IlayChatbot({ patientId }: Props) {
                   ),
                 )}
 
-                {isLoading && (
+                {isLoading && messages[messages.length - 1]?.content === "" && (
                   <div className="ilay-msg-bot-row">
                     <img src={AVATAR_SRC} alt="" className="ilay-msg-avatar" />
                     <div className="ilay-typing">

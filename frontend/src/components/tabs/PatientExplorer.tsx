@@ -89,6 +89,9 @@ function computeStateBands(
 
 export default function PatientExplorer({ data, loading }: Props) {
   const [notesOpen, setNotesOpen] = useState(false);
+  const [nliSourceFilter, setNliSourceFilter] = useState<string>("ALL");
+  const [nliVisibleCount, setNliVisibleCount] = useState(20);
+  const [nliRequestedCount, setNliRequestedCount] = useState("20");
   const metricReveal = useStaggeredReveal(6, { stepMs: 100, threshold: 0.2 });
   const demographicReveal = useStaggeredReveal(6, { baseDelayMs: 50, stepMs: 70, threshold: 0.2 });
   const sectionReveal = useStaggeredReveal(8, { baseDelayMs: 120, stepMs: 120, threshold: 0.14 });
@@ -161,6 +164,23 @@ export default function PatientExplorer({ data, loading }: Props) {
     return Object.entries(data.lab_series).slice(0, 5);
   }, [data]);
 
+  const nliSources = useMemo(() => {
+    if (!data?.nli_scores) return [];
+    return Array.from(new Set(data.nli_scores.map((row) => row.source))).sort();
+  }, [data]);
+
+  const filteredNliScores = useMemo(() => {
+    if (!data?.nli_scores) return [];
+    if (nliSourceFilter === "ALL") return data.nli_scores;
+    return data.nli_scores.filter((row) => row.source === nliSourceFilter);
+  }, [data, nliSourceFilter]);
+
+  const visibleNliCount =
+    filteredNliScores.length === 0
+      ? 0
+      : Math.min(Math.max(1, nliVisibleCount), filteredNliScores.length);
+  const visibleNliRows = filteredNliScores.slice(0, visibleNliCount);
+
   /* ── Loading skeleton ──────────────────────────────────────────────── */
 
   if (loading) {
@@ -212,6 +232,13 @@ export default function PatientExplorer({ data, loading }: Props) {
 
   return (
     <div className="space-y-6 p-2 sm:p-4">
+      <div className="tab-intro tab-intro-frost frost-panel">
+        <h2 className="tab-intro-title">Patient Explorer</h2>
+        <p className="tab-intro-subtitle">
+          Longitudinal risk trajectory, clinical language signals, and individualized context for selected patient.
+        </p>
+      </div>
+
       {/* ── 1. Summary Metric Cards ──────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
         {/* Composite Rating */}
@@ -726,6 +753,48 @@ export default function PatientExplorer({ data, loading }: Props) {
               <InfoTooltip metricId="patient.nli.score" />
             </span>
           </h3>
+
+          <div className="nli-toolbar">
+            <div className="nli-toolbar-group">
+              <label className="nli-toolbar-label" htmlFor="nli-source-filter">Source</label>
+              <select
+                id="nli-source-filter"
+                className="nli-toolbar-select"
+                value={nliSourceFilter}
+                onChange={(e) => {
+                  setNliSourceFilter(e.target.value);
+                  setNliVisibleCount(20);
+                  setNliRequestedCount("20");
+                }}
+              >
+                <option value="ALL">All Sources</option>
+                {nliSources.map((source) => (
+                  <option key={source} value={source}>{source}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="nli-toolbar-group">
+              <label className="nli-toolbar-label" htmlFor="nli-show-count">Show N</label>
+              <input
+                id="nli-show-count"
+                className="nli-toolbar-input"
+                type="number"
+                min={1}
+                max={Math.max(1, filteredNliScores.length)}
+                value={nliRequestedCount}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  setNliRequestedCount(raw);
+                  const parsed = Number(raw);
+                  if (!Number.isFinite(parsed)) return;
+                  const next = Math.min(Math.max(1, Math.floor(parsed)), Math.max(1, filteredNliScores.length));
+                  setNliVisibleCount(next);
+                }}
+              />
+            </div>
+          </div>
+
           <div className="frost-panel frost-table-wrap">
             <table className="frost-table">
               <thead>
@@ -742,7 +811,13 @@ export default function PatientExplorer({ data, loading }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {data.nli_scores.map((row, i) => (
+                {visibleNliRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="py-6 text-center text-sm text-slate-400">
+                      No NLI rows match the selected source filter.
+                    </td>
+                  </tr>
+                ) : visibleNliRows.map((row, i) => (
                   <tr key={i}>
                     <td className="whitespace-nowrap">
                       {formatDate(row.date)}
@@ -776,25 +851,39 @@ export default function PatientExplorer({ data, loading }: Props) {
                   <td
                     className="text-right font-bold"
                     style={{
-                      color: nlpColor(
-                        data.nli_scores.reduce(
-                          (a, r) => a + r.nli_score,
-                          0,
-                        ) / data.nli_scores.length,
-                      ),
+                      color: visibleNliRows.length
+                        ? nlpColor(
+                            visibleNliRows.reduce((a, r) => a + r.nli_score, 0) /
+                              visibleNliRows.length,
+                          )
+                        : "#9db3cc",
                     }}
                   >
-                    {(
-                      data.nli_scores.reduce(
-                        (a, r) => a + r.nli_score,
-                        0,
-                      ) / data.nli_scores.length
-                    ).toFixed(3)}
+                    {visibleNliRows.length
+                      ? (
+                          visibleNliRows.reduce((a, r) => a + r.nli_score, 0) /
+                          visibleNliRows.length
+                        ).toFixed(3)
+                      : "—"}
                   </td>
                 </tr>
               </tbody>
             </table>
           </div>
+
+          {visibleNliCount < filteredNliScores.length && (
+            <button
+              type="button"
+              className="nli-load-more"
+              onClick={() => {
+                const next = Math.min(nliVisibleCount + 20, filteredNliScores.length);
+                setNliVisibleCount(next);
+                setNliRequestedCount(String(next));
+              }}
+            >
+              Load More ({filteredNliScores.length - visibleNliCount} remaining)
+            </button>
+          )}
         </div>
       )}
 

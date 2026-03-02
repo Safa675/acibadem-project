@@ -220,10 +220,10 @@ export default function CohortOverview({ data, loading }: Props) {
   return (
     <div className="tab-content-inner">
       {/* ── Title ── */}
-      <h2 style={{ margin: 0 }}>Cohort Overview</h2>
-      <p style={{ color: CHART_COLORS.text, marginTop: 4, marginBottom: 24 }}>
-        Real-time risk intelligence across all monitored patients.
-      </p>
+      <div className="tab-intro tab-intro-frost frost-panel">
+        <h2 className="tab-intro-title">Cohort Overview</h2>
+        <p className="tab-intro-subtitle">Real-time risk intelligence across all monitored patients.</p>
+      </div>
 
       {/* ── KPI Cards ── */}
       <div

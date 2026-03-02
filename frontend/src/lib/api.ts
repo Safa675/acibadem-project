@@ -38,10 +38,45 @@ export async function getValidation(): Promise<ValidationData> {
 
 export async function sendChatMessage(
   messages: ChatMessage[],
-  patientId: number
-): Promise<{ reply: string }> {
-  return fetchJSON("/api/chat", {
+  patientId: number,
+  onToken: (token: string) => void
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/chat`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages, patient_id: patientId }),
   });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    console.error(`[ILAY Chat] API error ${res.status}: ${body.slice(0, 300)}`);
+    throw new Error(`API error: ${res.status} ${res.statusText}`);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("No response body");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const data = line.slice(6);
+      if (data === "[DONE]") return;
+      try {
+        onToken(JSON.parse(data));
+      } catch {
+        // Fallback for non-JSON data (e.g. plain error strings)
+        onToken(data);
+      }
+    }
+  }
 }

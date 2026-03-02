@@ -27,6 +27,47 @@ interface Props {
   selectedPatientId: number;
 }
 
+const FEATURE_DESCRIPTIONS: Record<string, string> = {
+  mean_health_score: "Average longitudinal health index score for the patient.",
+  n_prescriptions: "Total number of prescription events captured in the timeline.",
+  n_lab_draws: "Count of recorded laboratory observations.",
+  n_comorbidities: "Number of documented comorbidity conditions.",
+  total_visits: "Total clinical visit count in available records.",
+  age: "Patient age at observed period.",
+};
+
+function humanizeFeature(raw: string): string {
+  return raw
+    .split("_")
+    .map((part) => {
+      const token = part.toLowerCase();
+      if (token === "csi") return "CSI";
+      if (token === "nlp") return "NLP";
+      if (token === "var") return "VaR";
+      if (token === "los") return "LOS";
+      return token.charAt(0).toUpperCase() + token.slice(1);
+    })
+    .join(" ");
+}
+
+function FeatureAxisTick(props: {
+  x?: number | string;
+  y?: number | string;
+  payload?: { value?: string | number };
+  lookup: Record<string, string>;
+}) {
+  const value = String(props.payload?.value ?? "");
+  const description = props.lookup[value] ?? value;
+  return (
+    <g transform={`translate(${Number(props.x ?? 0)},${Number(props.y ?? 0)})`}>
+      <title>{description}</title>
+      <text x={-6} y={0} dy={4} textAnchor="end" fill={CHART_COLORS.text} fontSize={11}>
+        {value}
+      </text>
+    </g>
+  );
+}
+
 /* ---------- CSI Gauge (SVG semicircle) ---------- */
 
 function CSIGauge({ score, tier }: { score: number; tier: string }) {
@@ -212,8 +253,30 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
     );
   }
 
+  const featureBarData = data.feature_bar.map((row) => ({
+    ...row,
+    feature_label: humanizeFeature(row.feature),
+    feature_desc: FEATURE_DESCRIPTIONS[row.feature] ?? `${humanizeFeature(row.feature)} contribution to CSI scoring.`,
+  }));
+
+  const featureCorrelationData = data.feature_correlations.map((row) => ({
+    ...row,
+    feature_label: humanizeFeature(row.feature),
+    feature_desc: FEATURE_DESCRIPTIONS[row.feature] ?? `${humanizeFeature(row.feature)} relationship with total visit count.`,
+  }));
+
+  const featureBarLookup = Object.fromEntries(featureBarData.map((row) => [row.feature_label, row.feature_desc]));
+  const featureCorrelationLookup = Object.fromEntries(featureCorrelationData.map((row) => [row.feature_label, row.feature_desc]));
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      <div className="tab-intro tab-intro-frost frost-panel">
+        <h2 className="tab-intro-title">Outcome Predictor</h2>
+        <p className="tab-intro-subtitle">
+          Severity forecasting and feature-level explainability for downstream outcome risk.
+        </p>
+      </div>
+
       {/* ---- Row 1: Gauge + Narrative ---- */}
       <div
         {...reveal.getRevealProps(0, "scale").staggerAttrs}
@@ -243,7 +306,7 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
         </h3>
         <ResponsiveContainer width="100%" height={Math.max(220, data.feature_bar.length * 36)}>
           <BarChart
-            data={data.feature_bar}
+            data={featureBarData}
             layout="vertical"
             margin={{ top: 4, right: 30, left: 12, bottom: 4 }}
           >
@@ -254,10 +317,10 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
             />
             <XAxis type="number" tick={{ fill: CHART_COLORS.text, fontSize: 11 }} />
             <YAxis
-              dataKey="feature"
+              dataKey="feature_label"
               type="category"
-              width={140}
-              tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
+              width={168}
+              tick={(props) => <FeatureAxisTick {...props} lookup={featureBarLookup} />}
             />
             <Tooltip content={<ChartTooltipContent />} />
             <Bar dataKey="value" radius={[0, 4, 4, 0]} maxBarSize={22} isAnimationActive animationDuration={980} animationBegin={140}>
@@ -332,12 +395,13 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
             <InfoTooltip metricId="outcome.spearman_r" />
           </span>
         </h3>
+        <p className="mb-3 text-xs text-slate-400">Hover feature labels for quick definitions.</p>
         <ResponsiveContainer
           width="100%"
           height={Math.max(220, data.feature_correlations.length * 36)}
         >
           <BarChart
-            data={data.feature_correlations}
+            data={featureCorrelationData}
             layout="vertical"
             margin={{ top: 4, right: 30, left: 12, bottom: 4 }}
           >
@@ -352,10 +416,10 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
               tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
             />
             <YAxis
-              dataKey="feature"
+              dataKey="feature_label"
               type="category"
-              width={140}
-              tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
+              width={168}
+              tick={(props) => <FeatureAxisTick {...props} lookup={featureCorrelationLookup} />}
             />
             <Tooltip content={<ChartTooltipContent />} />
             <ReferenceLine x={0} stroke={CHART_COLORS.text} strokeWidth={1} />

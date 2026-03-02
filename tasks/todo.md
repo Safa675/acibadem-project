@@ -267,3 +267,29 @@
 - Added `dashboard-enter` transition so post-landing content fades/scales in smoothly.
 - Added landing animations and styles in `frontend/src/app/globals.css`, including subtle gradient drift, particle motion, CTA pulse, and responsive layout behavior.
 - Verified with `npm run build` in `frontend/` (success).
+
+---
+
+# OpenRouter Chatbot Model Latency Benchmark
+
+## Checklist
+
+- [x] Define benchmark script scope and success criteria for 5 cheap models
+- [x] Implement standalone benchmark script using full ILAY payload (system prompt + patient context)
+- [x] Add latency statistics and ranked console output for model comparison
+- [x] Run benchmark script to verify execution and output format
+- [x] Document review notes and findings in this file
+
+## Review
+
+- Added `scripts/benchmark_openrouter_models.py` to benchmark OpenRouter model speed with the same full ILAY request shape used by production chat (`SYSTEM_PROMPT` + `build_patient_context(...)`).
+- Script benchmarks 5 default low-cost models (`qwen3.5-flash`, `gpt-4o-mini`, `gemini-2.0-flash`, `claude-3.5-haiku`, `deepseek-chat-v3`) with configurable repeats/warmups/timeout and optional model overrides.
+- Implemented end-to-end latency measurement per request, per-model summary stats (min/mean/p50/p95/max), success rate, error capture, and sorted ranking output.
+- Verification run executed successfully:
+  - `python scripts/benchmark_openrouter_models.py --prompt "Summarize patient risk in 3 short sentences." --patient-id 1 --repeats 1 --warmups 0`
+  - All 5 models returned successfully; fastest in this sample run was `google/gemini-2.0-flash-001`.
+- Full comparison run executed successfully:
+  - `python scripts/benchmark_openrouter_models.py --prompt "Summarize patient risk in 3 short sentences." --patient-id 1 --repeats 3 --warmups 1`
+  - All 5 models returned successfully.
+  - Mean latency ranking from this run: `google/gemini-2.0-flash-001` (929.4 ms), `openai/gpt-4o-mini` (1412.0 ms), `anthropic/claude-3.5-haiku` (3313.2 ms), `deepseek/deepseek-chat-v3` (3429.6 ms), `qwen/qwen3.5-flash-02-23` (22485.9 ms).
+- Updated production chatbot default model in `src/chatbot.py` from `qwen/qwen3.5-flash-02-23` to `google/gemini-2.0-flash-001`, then verified the constant via `python -c "from src.chatbot import MODEL; print(MODEL)"`.

@@ -342,6 +342,34 @@ body {
   letter-spacing: 0.01em;
 }
 
+.tab-intro {
+  margin-bottom: 24px;
+}
+
+.tab-intro-frost {
+  padding: 14px 16px;
+  border: 1px solid rgba(182, 215, 244, 0.2);
+  background:
+    linear-gradient(150deg, rgba(255, 255, 255, 0.1), rgba(130, 158, 188, 0.06) 45%, rgba(12, 20, 32, 0.62) 100%),
+    rgba(13, 20, 33, 0.56);
+}
+
+.tab-intro-title {
+  margin: 0;
+  color: #eef5ff;
+  font-size: 1.84rem;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+}
+
+.tab-intro-subtitle {
+  margin: 6px 0 0;
+  color: #9bb2cd;
+  font-size: 0.92rem;
+  letter-spacing: 0.01em;
+}
+
 /* ── Glass Morphism Utilities ──────────────────────────────────────────── */
 
 .frost-panel {
@@ -482,16 +510,24 @@ body {
   padding: 19px 16px;
   text-align: center;
   transition: all 0.25s ease;
-  border: 1px solid rgba(255, 255, 255, 0.11);
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.085), rgba(148, 163, 184, 0.03) 58%, rgba(15, 23, 42, 0.22));
+  border: 1px solid rgba(184, 216, 247, 0.2);
+  background:
+    linear-gradient(155deg, rgba(255, 255, 255, 0.13), rgba(147, 170, 197, 0.08) 46%, rgba(10, 18, 30, 0.52) 100%),
+    rgba(14, 24, 38, 0.62);
+  box-shadow:
+    0 12px 28px rgba(4, 10, 18, 0.44),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 rgba(113, 170, 222, 0.18);
 }
 
 .metric-card:hover,
 .frost-kpi-card:hover {
   transform: translateY(-2px);
-  background: var(--color-frost-card-bg-hover);
-  border-color: var(--color-frost-card-border);
-  box-shadow: var(--color-frost-card-shadow);
+  border-color: rgba(170, 221, 255, 0.32);
+  box-shadow:
+    0 16px 36px rgba(4, 10, 18, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(113, 170, 222, 0.22);
 }
 
 .metric-value {
@@ -790,17 +826,17 @@ body {
 
 .info-popover {
   position: absolute;
-  z-index: 50;
+  z-index: 95;
   top: calc(100% + 10px);
   left: 50%;
   transform: translateX(-50%);
   width: min(320px, 82vw);
   border-radius: 12px;
-  border: 1px solid var(--color-frost-tooltip-border);
-  background: var(--color-frost-tooltip-bg);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  box-shadow: 0 12px 30px rgba(4, 7, 14, 0.4);
+  border: 1px solid rgba(170, 214, 248, 0.32);
+  background: linear-gradient(165deg, rgba(17, 28, 45, 0.98), rgba(9, 15, 26, 0.97));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 20px 42px rgba(2, 8, 18, 0.6);
   padding: 10px 11px;
   display: flex;
   flex-direction: column;
@@ -818,13 +854,59 @@ body {
 
 .info-popover-item {
   font-size: 11px;
-  color: #bfd0e6;
-  line-height: 1.35;
+  color: #d2e2f4;
+  line-height: 1.45;
 }
 
 .info-popover-item strong {
-  color: #f0f6ff;
+  color: #f5f9ff;
   font-weight: 600;
+}
+
+.nli-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.nli-toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nli-toolbar-label {
+  color: #93a7c2;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 650;
+}
+
+.nli-toolbar-input,
+.nli-toolbar-select {
+  background: rgba(23, 34, 52, 0.72);
+  border: 1px solid rgba(166, 204, 236, 0.24);
+  border-radius: 10px;
+  color: #e5eefb;
+  font-size: 0.82rem;
+  padding: 7px 10px;
+}
+
+.nli-load-more {
+  margin-top: 12px;
+  border: 1px solid rgba(156, 208, 248, 0.3);
+  border-radius: 10px;
+  color: #d1e9ff;
+  background: rgba(38, 56, 80, 0.45);
+  font-size: 0.8rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 8px 12px;
+  cursor: pointer;
 }
 
 /* ── Shared States ─────────────────────────────────────────────────────── */
