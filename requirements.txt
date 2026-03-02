@@ -1,0 +1,28 @@
+# Acıbadem Healthcare Analytics — Standalone Requirements
+# Install with: pip install -r requirements.txt
+#
+# Standalone package — no external quant library dependencies.
+# All analytics implemented with NumPy/SciPy.
+# Backend API served via FastAPI.
+
+# ── Core (required) ─────────────────────────────────────────────────────────
+numpy>=1.24
+pandas>=2.0
+matplotlib>=3.7
+scipy>=1.10
+requests>=2.28
+python-dotenv>=1.0
+
+# ODS file reading (labdata.ods, anadata.ods, recete.ods)
+odfpy>=1.4.1
+
+# ── API Backend ─────────────────────────────────────────────────────────────
+fastapi>=0.100
+uvicorn>=0.23.0
+pydantic>=2.0
+
+# ── Transformer NLP (optional — only needed for Turkish BERT NLP) ───────────
+# Falls back to returning 0.0 scores automatically if not installed.
+# transformers>=4.35
+# torch>=2.1
+# sentencepiece>=0.1.99
