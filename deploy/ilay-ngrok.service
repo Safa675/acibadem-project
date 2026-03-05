@@ -1,0 +1,14 @@
+[Unit]
+Description=ILAY ngrok tunnel for backend
+After=network.target ilay-backend.service
+Wants=ilay-backend.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/ngrok start --config /opt/ilay/deploy/ngrok.yml --all
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

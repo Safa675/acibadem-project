@@ -178,11 +178,7 @@ export default function ValidationTab({ data, loading }: Props) {
     stepMs: 50,
     threshold: 0.12,
   });
-  const methodologyReveal = useStaggeredReveal(METHODOLOGY_TABLE.length, {
-    baseDelayMs: 80,
-    stepMs: 50,
-    threshold: 0.1,
-  });
+
 
   if (loading) {
     return (
@@ -329,22 +325,17 @@ export default function ValidationTab({ data, loading }: Props) {
               </tr>
             </thead>
             <tbody>
-              {METHODOLOGY_TABLE.map((row, i) => {
-                const reveal = methodologyReveal.getRevealProps(i, "fade");
-                return (
+              {METHODOLOGY_TABLE.map((row, i) => (
                 <tr
                   key={i}
-                  {...reveal.staggerAttrs}
-                  className={`border-b border-white/[0.03] transition-colors hover:bg-white/[0.02] ${reveal.staggerClass}`}
-                  style={reveal.staggerStyle}
+                  className="border-b border-white/[0.03] transition-colors hover:bg-white/[0.02]"
                 >
                   <td className="px-5 py-2.5 text-slate-400">{row.finance}</td>
                   <td className="px-5 py-2.5 font-medium text-slate-300">
                     {row.healthcare}
                   </td>
                 </tr>
-                );
-              })}
+              ))}
             </tbody>
           </table>
         </div>

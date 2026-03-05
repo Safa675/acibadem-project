@@ -18,12 +18,10 @@ The core insight: **lab test time-series behave like financial time-series. Pati
 # Install dependencies
 pip install -r requirements.txt
 
-# Optional: transformer NLP (zero-shot NLI — falls back to rule-based automatically)
-pip install transformers torch sentencepiece
 
-# Launch the interactive dashboard
+# Launch the interactive app
 cd Acıbadem/
-streamlit run streamlit_app.py
+./start.sh
 ```
 
 ---

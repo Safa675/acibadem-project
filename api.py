@@ -75,7 +75,12 @@ app = FastAPI(title="ILAY API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://134.209.228.120",
+        "http://134.209.228.120:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -192,6 +197,36 @@ def _load_pipeline() -> dict:
 
     composites = compute_all_composites(latest_health, latest_nlp, rec_df, ana_df)
 
+    # Precompute NLI transformer scores for all patients at startup (expensive — do once)
+    _all_text_cols = ["ÖYKÜ", "Muayene Notu", "Kontrol Notu", "YAKINMA", "Tedavi Notu"]
+    nli_scores_cache: dict[int, list] = {}
+    for _pid in ana_df["patient_id"].unique():
+        _ana_pt = ana_df[ana_df["patient_id"] == _pid]
+        _avail_cols = [c for c in _all_text_cols if c in _ana_pt.columns]
+        _scores: list = []
+        if _avail_cols and not _ana_pt.empty:
+            for _, _vrow in _ana_pt.iterrows():
+                _vdate = _vrow.get("visit_date", None)
+                _vdate_str = (
+                    pd.Timestamp(_vdate).strftime("%Y-%m-%d")
+                    if _vdate is not None
+                    and not (isinstance(_vdate, float) and pd.isna(_vdate))
+                    else "—"
+                )
+                for _tcol in _avail_cols:
+                    _txt = _vrow.get(_tcol, None)
+                    if isinstance(_txt, str) and _txt.strip():
+                        _res = dual_nlp_score(_txt)
+                        _scores.append(
+                            {
+                                "date": _vdate_str,
+                                "source": _tcol,
+                                "text": _txt[:300],
+                                "nli_score": round(_res["combined"], 3),
+                            }
+                        )
+        nli_scores_cache[int(_pid)] = _scores
+
     profiles = build_all_outcome_profiles(
         all_snapshots, regimes, ana_df, rec_df, nlp_results
     )
@@ -214,6 +249,7 @@ def _load_pipeline() -> dict:
         "profiles": {p.patient_id: p for p in profiles},
         "validation_results": validation_results,
         "var_results": var_results_by_pid,
+        "nli_scores_cache": nli_scores_cache,
     }
     return _pipeline_cache
 
@@ -510,32 +546,8 @@ def get_patient(patient_id: int):
                 )
             )
 
-    # NLI transformer scores table
-    nli_scores = []
-    ana_patient_texts = ana_df[ana_df["patient_id"] == patient_id].copy()
-    _all_text_cols = ["ÖYKÜ", "Muayene Notu", "Kontrol Notu", "YAKINMA", "Tedavi Notu"]
-    _available_text_cols = [c for c in _all_text_cols if c in ana_patient_texts.columns]
-    if _available_text_cols and not ana_patient_texts.empty:
-        for _, _visit_row in ana_patient_texts.iterrows():
-            _vdate = _visit_row.get("visit_date", None)
-            _vdate_str = (
-                pd.Timestamp(_vdate).strftime("%Y-%m-%d")
-                if _vdate is not None
-                and not (isinstance(_vdate, float) and pd.isna(_vdate))
-                else "—"
-            )
-            for _tcol in _available_text_cols:
-                _txt = _visit_row.get(_tcol, None)
-                if isinstance(_txt, str) and _txt.strip():
-                    res = dual_nlp_score(_txt)
-                    nli_scores.append(
-                        {
-                            "date": _vdate_str,
-                            "source": _tcol,
-                            "text": _txt[:300],
-                            "nli_score": round(res["combined"], 3),
-                        }
-                    )
+    # NLI transformer scores table — served from startup cache (precomputed)
+    nli_scores = ctx["nli_scores_cache"].get(patient_id, [])
 
     # Lab time series
     patient_labs = lab_df[lab_df["patient_id"] == patient_id].copy()

@@ -293,3 +293,73 @@
   - All 5 models returned successfully.
   - Mean latency ranking from this run: `google/gemini-2.0-flash-001` (929.4 ms), `openai/gpt-4o-mini` (1412.0 ms), `anthropic/claude-3.5-haiku` (3313.2 ms), `deepseek/deepseek-chat-v3` (3429.6 ms), `qwen/qwen3.5-flash-02-23` (22485.9 ms).
 - Updated production chatbot default model in `src/chatbot.py` from `qwen/qwen3.5-flash-02-23` to `google/gemini-2.0-flash-001`, then verified the constant via `python -c "from src.chatbot import MODEL; print(MODEL)"`.
+
+---
+
+# Deployment Bug Investigation — Dashboard `Failed to fetch`
+
+## Checklist
+
+- [x] Reproduce and isolate failure path from frontend API client to backend endpoints
+- [x] Identify root cause with concrete evidence from code and build artifacts
+- [x] Implement minimal, robust fix for production API base resolution
+- [x] Verify frontend build succeeds with the fix
+- [x] Document root cause and resolution in review notes
+
+## Review
+
+- Root cause: frontend API base defaulted to `http://localhost:8000` whenever `NEXT_PUBLIC_API_URL` was not embedded in the build, causing browser-side network failure (`Failed to fetch`) on deployed host.
+- Evidence: API client used a hard fallback in `frontend/src/lib/api.ts`; backend endpoints were healthy in prior logs (`backend.log` shows successful `GET /api/patients`, `/api/cohort`, and `/api/patient/*` 200 responses).
+- Fix: replaced static fallback with runtime-aware resolver in `frontend/src/lib/api.ts`:
+  - use `NEXT_PUBLIC_API_URL` if provided,
+  - use `http://localhost:8000` only for local localhost development,
+  - otherwise default to `window.location.origin` so `/api/*` stays same-origin behind nginx.
+- Improved diagnostics: network failures now throw explicit API target errors (e.g., `Could not reach API at ...`) instead of opaque `Failed to fetch`.
+- Verification: `npm run build` in `frontend/` succeeded.
+
+---
+
+# Frontend-Only Vercel Deployment
+
+## Checklist
+
+- [x] Add Vercel rewrite proxy for `/api/*` in `frontend/next.config.ts`
+- [x] Verify frontend production build in `frontend/`
+- [x] Deploy frontend project to Vercel production
+- [ ] Verify deployed `/api` proxy and dashboard data flow
+
+## Review
+
+- Added rewrite proxy in `frontend/next.config.ts` from `/api/:path*` to `${API_PROXY_TARGET}/api/:path*` with fallback `http://134.209.228.120`.
+- Verified local production build with `npm run build` in `frontend/` (success).
+- Deployed frontend to Vercel successfully:
+  - Production URL: `https://frontend-gamma-eight-10.vercel.app`
+  - Inspect URL: `https://vercel.com/safas-projects-5569a5d3/frontend/9cDEovhNCTWGYTvCVaLR1irBVdRA`
+- Verified homepage loads (HTTP 200) on Vercel.
+- Blocker: `/api/*` via Vercel currently returns `502 ROUTER_EXTERNAL_TARGET_CONNECTION_ERROR` because target backend `http://134.209.228.120` is not reachable from public internet (connection timeout).
+
+---
+
+# Backend HTTPS via ngrok (Stable Reserved Domain)
+
+## Checklist
+
+- [x] Add reusable ngrok systemd unit template for backend tunnel
+- [x] Add ngrok config template with reserved-domain tunnel shape
+- [x] Configure ngrok authtoken on backend host
+- [x] Start ngrok tunnel and verify external `/api/patients`
+- [x] Update Vercel `API_PROXY_TARGET` and redeploy frontend
+- [x] Verify Vercel frontend end-to-end API flow
+
+## Review
+
+- Added `deploy/ilay-ngrok.service` to keep ngrok tunnel persistent via systemd.
+- Added `deploy/ngrok.yml.example` for reserved-domain HTTPS tunnel to backend `127.0.0.1:8000`.
+- Configured ngrok auth on host via `ngrok config add-authtoken`.
+- Verified local backend (`127.0.0.1:8000`) and started ngrok tunnel to it.
+- Updated Vercel project env `API_PROXY_TARGET` to active ngrok HTTPS endpoint and redeployed.
+- Verified Vercel API proxy success:
+  - `GET /api/patients` returns 200 with 9 patients.
+  - `GET /api/cohort` returns 200 with expected cohort payload keys.
+  - `POST /api/chat` streams SSE tokens and terminates with `[DONE]`.
+- Constraint discovered: account is on ngrok Free plan, so reserved custom domain/subdomain is not available (`ERR_NGROK_313`, `ERR_NGROK_314`).

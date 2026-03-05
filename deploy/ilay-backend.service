@@ -1,0 +1,16 @@
+[Unit]
+Description=ILAY FastAPI Backend
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ilay
+Environment=PATH=/opt/ilay/.venv/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/opt/ilay/.env
+ExecStart=/opt/ilay/.venv/bin/python -m uvicorn api:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

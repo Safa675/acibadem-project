@@ -1,0 +1,10 @@
+version: "2"
+authtoken: "REPLACE_WITH_NGROK_AUTHTOKEN"
+
+tunnels:
+  ilay-backend:
+    proto: http
+    addr: 127.0.0.1:8000
+    domain: "REPLACE_WITH_RESERVED_DOMAIN.ngrok-free.app"
+    schemes:
+      - https

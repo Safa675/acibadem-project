@@ -177,6 +177,23 @@ export default function Home() {
     setTabTransitionKey((prev) => prev + 1);
   }, [activeTab]);
 
+  useEffect(() => {
+    if (!showDashboard) return;
+
+    const preloaders = TAB_BACKGROUNDS.map((src) => {
+      const img = new Image();
+      img.decoding = "async";
+      img.src = src;
+      return img;
+    });
+
+    return () => {
+      preloaders.forEach((img) => {
+        img.src = "";
+      });
+    };
+  }, [showDashboard]);
+
   // ── Error screen ───────────────────────────────────────────────────────
   if (!showDashboard) {
     return <LandingHero onEnter={() => setShowDashboard(true)} />;

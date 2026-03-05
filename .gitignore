@@ -33,5 +33,16 @@ frontend/*.tsbuildinfo
 # Data
 *.ods
 
+# Logs
+logs/
+*.log
+
+# Node (root level)
+node_modules/
+package-lock.json
+
+# Credentials / tunnels
+ngroq.txt
+
 # Tasks
 tasks
