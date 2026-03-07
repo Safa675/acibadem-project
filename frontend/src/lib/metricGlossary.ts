@@ -215,6 +215,38 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
       "Sign indicates direction; absolute value indicates monotonic association strength.",
     range: "[-1, +1]",
   },
+  "outcome.sut_cost": {
+    id: "outcome.sut_cost",
+    title: "SUT Cost Estimate",
+    definition:
+      "Estimated healthcare cost range (TRY) based on SUT (Sağlık Uygulama Tebliği) official pricing for lab tests, visits, prescriptions, and procedures.",
+    formula: "SUT_total = SUT_lab + SUT_visit + SUT_rx + SUT_procedure",
+    interpretation:
+      "Shows the min–max cost range in Turkish Lira based on official SUT reimbursement prices. Midpoint is the best single estimate. Useful for actuarial budgeting and hospital revenue planning.",
+    range: "[0, ∞) TRY",
+    source: "SUT Pricing Engine (src/sut_pricing.py)",
+  },
+  "outcome.sut_cost_tier": {
+    id: "outcome.sut_cost_tier",
+    title: "SUT Cost Tier",
+    definition:
+      "Categorical cost classification based on midpoint SUT cost estimate.",
+    formula:
+      "Very High ≥10,000 | High ≥5,000 | Moderate ≥2,000 | Low ≥500 | Minimal <500 TRY",
+    interpretation:
+      "Quick visual indicator of patient cost burden. Higher tiers indicate greater expected resource consumption and reimbursement claim amounts.",
+    source: "SUT Pricing Engine (src/sut_pricing.py)",
+  },
+  "cohort.sut_summary": {
+    id: "cohort.sut_summary",
+    title: "Cohort SUT Cost Summary",
+    definition:
+      "Aggregate SUT cost statistics across all patients in the active cohort, including total, mean, and median cost estimates with breakdown by category.",
+    formula: "sum/mean/median(patient_sut_cost_mid) across cohort",
+    interpretation:
+      "Provides actuarial-grade cohort cost overview. Category breakdown (lab, visit, Rx, procedure) identifies dominant cost drivers for budget allocation.",
+    source: "SUT Pricing Engine (src/sut_pricing.py)",
+  },
   "explorer.filter.age_range": {
     id: "explorer.filter.age_range",
     title: "Age Range Filter",
