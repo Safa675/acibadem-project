@@ -73,3 +73,9 @@ export function getRegimeCue(state: string): MetricCue {
   if (state === "Critical") return cue("Negative trend / high volatility", "bad");
   return cue("Insufficient state evidence", "neutral");
 }
+
+export function getDataCompletenessCue(pct: number): MetricCue {
+  if (pct >= 80) return cue("High data coverage", "good", "Both labs and vitals are well-represented.");
+  if (pct >= 50) return cue("Partial coverage", "warn", "Most patients have labs only; vitals are sparse.");
+  return cue("Low data coverage", "bad", "Significant signal gaps may reduce scoring accuracy.");
+}

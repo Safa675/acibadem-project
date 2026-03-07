@@ -33,6 +33,7 @@ import {
   getMeanECICue,
   getCriticalCountCue,
   getRxIntensityCue,
+  getDataCompletenessCue,
 } from "@/lib/interpretation";
 import useCountUp from "@/hooks/useCountUp";
 import useStaggeredReveal from "@/hooks/useStaggeredReveal";
@@ -211,14 +212,16 @@ export default function CohortOverview({ data, loading, onPageChange }: Props) {
   const meanEciCue = getMeanECICue(kpi.mean_eci);
   const criticalCue = getCriticalCountCue(kpi.n_critical);
   const rxIntensityCue = getRxIntensityCue(kpi.total_rx, kpi.n_patients);
+  const dataCompletenessCue = getDataCompletenessCue(kpi.mean_data_completeness ?? 50);
 
   const animatedPatients = useCountUp(kpi.n_patients, 1050, 0, !!data && !loading);
   const animatedMeanScore = useCountUp(kpi.mean_score, 1150, 1, !!data && !loading);
   const animatedMeanEci = useCountUp(kpi.mean_eci, 1000, 1, !!data && !loading);
   const animatedCritical = useCountUp(kpi.n_critical, 1000, 0, !!data && !loading);
   const animatedTotalRx = useCountUp(kpi.total_rx, 1100, 0, !!data && !loading);
+  const animatedCompleteness = useCountUp(kpi.mean_data_completeness ?? 50, 1000, 1, !!data && !loading);
 
-  const kpiReveal = useStaggeredReveal(5, { stepMs: 100, threshold: 0.2 });
+  const kpiReveal = useStaggeredReveal(6, { stepMs: 100, threshold: 0.2 });
   const chartReveal = useStaggeredReveal(3, { baseDelayMs: 80, stepMs: 150, threshold: 0.15 });
 
   const kpiCards = [
@@ -251,6 +254,12 @@ export default function CohortOverview({ data, loading, onPageChange }: Props) {
       label: "Total Prescriptions",
       metricId: "cohort.total_rx",
       cue: rxIntensityCue,
+    },
+    {
+      value: `${animatedCompleteness.toFixed(1)}%`,
+      label: "Data Completeness",
+      metricId: "cohort.mean_data_completeness",
+      cue: dataCompletenessCue,
     },
   ];
 
@@ -540,6 +549,7 @@ export default function CohortOverview({ data, loading, onPageChange }: Props) {
                 </span>
               </th>
               <th>ECI Rating</th>
+              <th>Data Quality</th>
               <th>Rx Count</th>
             </tr>
           </thead>
@@ -557,6 +567,29 @@ export default function CohortOverview({ data, loading, onPageChange }: Props) {
                 <td>{row.nlp_score.toFixed(1)}</td>
                 <td>{row.eci_score != null ? row.eci_score.toFixed(1) : "—"}</td>
                 <td>{row.eci_rating ?? "—"}</td>
+                <td>
+                  <span
+                    className="badge"
+                    style={{
+                      background:
+                        (row.data_completeness ?? 50) >= 80
+                          ? "rgba(46,204,113,0.15)"
+                          : (row.data_completeness ?? 50) >= 50
+                            ? "rgba(250,204,21,0.15)"
+                            : "rgba(239,68,68,0.15)",
+                      color:
+                        (row.data_completeness ?? 50) >= 80
+                          ? "#2ECC71"
+                          : (row.data_completeness ?? 50) >= 50
+                            ? "#FACC15"
+                            : "#EF4444",
+                    }}
+                  >
+                    {row.data_completeness != null
+                      ? `${row.data_completeness.toFixed(0)}%`
+                      : "—"}
+                  </span>
+                </td>
                 <td>{row.n_prescriptions ?? "—"}</td>
               </tr>
             ))}

@@ -67,7 +67,7 @@ METRICS — FULL REFERENCE
 1) HEALTH SCORE — 0 to 100
    • Composite score from lab results + vital signs.
    • Each lab test is z-scored against its reference range.
-   • Vitals (BP, pulse, SpO2) normalized using clinical standards.
+   • Vitals (systolic/diastolic BP) normalized using clinical standards.
    • Formula: 100 × exp(−0.25 × mean_z) where mean_z is weighted organ-system z-score
    • 100 = perfectly normal, 0 = maximally abnormal
    • Vital weight: 45% (based on NEWS AUROC 0.867)

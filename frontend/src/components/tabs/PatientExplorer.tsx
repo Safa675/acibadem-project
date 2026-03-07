@@ -465,7 +465,7 @@ export default function PatientExplorer({
   const ageMaxInput = filters.ageMax;
   const weightMinInput = filters.weightMin;
   const weightMaxInput = filters.weightMax;
-  const metricReveal = useStaggeredReveal(6, { stepMs: 100, threshold: 0.2 });
+  const metricReveal = useStaggeredReveal(7, { stepMs: 100, threshold: 0.2 });
   const demographicReveal = useStaggeredReveal(6, { baseDelayMs: 50, stepMs: 70, threshold: 0.2 });
   const sectionReveal = useStaggeredReveal(8, { baseDelayMs: 120, stepMs: 120, threshold: 0.14 });
 
@@ -972,6 +972,23 @@ export default function PatientExplorer({
             <MetricLabel text="ECI Score" metricId="patient.summary.eci_score" />
           </div>
           {eciCue && <MetricCue cue={eciCue} />}
+        </div>
+          );
+        })()}
+
+        {/* Data Completeness */}
+        {(() => {
+          const reveal = metricReveal.getRevealProps(6, "fade");
+          const dc = s.data_completeness;
+          const dcColor = dc != null && dc >= 80 ? "#2ECC71" : dc != null && dc >= 50 ? "#FACC15" : "#EF4444";
+          return (
+        <div {...reveal.staggerAttrs} className={`frost-panel frost-kpi-card ${reveal.staggerClass}`} style={reveal.staggerStyle}>
+          <div className="metric-value" style={{ color: dcColor }}>
+            {dc != null ? `${dc.toFixed(0)}%` : "—"}
+          </div>
+          <div className="metric-label">
+            <MetricLabel text="Data Completeness" metricId="cohort.mean_data_completeness" />
+          </div>
         </div>
           );
         })()}

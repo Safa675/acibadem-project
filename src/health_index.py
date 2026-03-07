@@ -32,20 +32,21 @@ _logger = logging.getLogger(__name__)
 # Reference ranges for vitals (clinical standards, sex-neutral)
 # Sources:
 #   - Blood pressure: WHO ISH 2020 guidelines; ESH/ESC 2018 (normal < 130/85)
-#   - Pulse (resting HR): standard clinical range 60-100 bpm
-#   - SpO2: normal ≥ 95% (WHO / standard pulse oximetry guidelines)
 #
 # NOTE: Ozarda 2014 (PMID 25153598) is a pure SERUM BIOCHEMISTRY paper covering 25
 # analytes (proteins, electrolytes, metabolites, enzymes). It contains NO vital-sign
 # data — blood pressure, pulse, and SpO2 are NOT in that paper.
+#
+# DROPPED (2026-03): pulse and SpO2 removed from active scoring.
+#   - pulse:  96.7% missing across 196K visit rows — near-zero signal
+#   - SpO2:   99.7% missing (only 540 rows) — effectively absent
+#   Blood pressure remains at ~20% coverage — the only vital with meaningful data.
 # ---------------------------------------------------------------------------
 
 VITAL_REFERENCE_RANGES: dict[str, tuple[float, float]] = {
     # (normal_min, normal_max)
     "systolic_bp": (90.0, 130.0),  # mmHg; WHO ISH 2020 / ESH 2018 normal range
     "diastolic_bp": (60.0, 85.0),  # mmHg; WHO ISH 2020 / ESH 2018 normal range
-    "pulse": (60.0, 100.0),  # bpm;  standard clinical resting HR
-    "spo2": (95.0, 100.0),  # %;    WHO / pulse oximetry normal
 }
 
 # ---------------------------------------------------------------------------
@@ -189,6 +190,7 @@ class HealthSnapshot(NamedTuple):
     n_labs: int
     has_vitals: bool
     dominant_organ_system: str | None
+    data_completeness: float  # [0.0-1.0] fraction of signal sources available
 
 
 # ---------------------------------------------------------------------------
@@ -349,15 +351,15 @@ class HealthIndexBuilder:
     ) -> float:
         """
         Score vitals from the visit closest to `date`.
-        Returns health score [0-100] from vitals.
+        Returns health score [0-100] from vitals, or NaN if no usable vitals.
         """
         if patient_vitals.empty:
-            return 100.0  # unknown → assume normal (conservative)
+            return float("nan")  # no data → signal absence (not "healthy")
 
         # ONLY use vitals from on or before the scoring date (no future leakage)
         past_vitals = patient_vitals[patient_vitals["date"] <= date]
         if past_vitals.empty:
-            return 100.0  # no past vitals available
+            return float("nan")  # no past vitals available
 
         # Find nearest past visit (within 30 days)
         time_diffs = date - past_vitals["date"]  # all non-negative
@@ -365,7 +367,7 @@ class HealthIndexBuilder:
         nearest_gap = time_diffs[nearest_idx]
 
         if nearest_gap > pd.Timedelta(days=30):
-            return 100.0  # too far away to use
+            return float("nan")  # too far away to use
 
         vital_row = past_vitals.loc[nearest_idx]
         z_scores = []
@@ -385,7 +387,7 @@ class HealthIndexBuilder:
                 z_scores.append(z)
 
         if not z_scores:
-            return 100.0
+            return float("nan")  # vital row exists but all values are NaN
 
         mean_z = np.mean(z_scores)
         return float(np.clip(100.0 * np.exp(-0.25 * mean_z), 0, 100))
@@ -460,7 +462,7 @@ class HealthIndexBuilder:
             vital_score = self._score_vitals_on_date(patient_vitals, date)
 
             has_labs = not patient_labs[patient_labs["date"] == date].empty
-            has_vitals = not patient_vitals[patient_vitals["date"] == date].empty
+            has_vitals = not np.isnan(vital_score)
 
             if has_labs and has_vitals:
                 composite = (
@@ -469,9 +471,10 @@ class HealthIndexBuilder:
             elif has_labs:
                 composite = lab_score
             else:
-                composite = vital_score
+                composite = vital_score  # vitals-only date (rare)
 
             n_labs = int(patient_labs[patient_labs["date"] == date].shape[0])
+            completeness = (0.5 if has_labs else 0.0) + (0.5 if has_vitals else 0.0)
             snapshots.append(
                 HealthSnapshot(
                     date=date,
@@ -479,6 +482,7 @@ class HealthIndexBuilder:
                     n_labs=n_labs,
                     has_vitals=has_vitals,
                     dominant_organ_system=dominant,
+                    data_completeness=completeness,
                 )
             )
 
@@ -723,9 +727,9 @@ class HealthIndexBuilder:
         vital_cols = [c for c in _ANA_VITAL_COLS.keys() if c in ana_df.columns]
 
         if not vital_cols or "visit_date" not in ana_df.columns:
-            # No vitals available at all — return defaults
+            # No vitals available at all — return NaN (absence, not "healthy")
             result = lab_dates[["patient_id", "date_norm"]].copy()
-            result["vital_score"] = 100.0
+            result["vital_score"] = np.nan
             result["has_vitals"] = False
             return result
 
@@ -735,7 +739,7 @@ class HealthIndexBuilder:
 
         if vitals.empty:
             result = lab_dates[["patient_id", "date_norm"]].copy()
-            result["vital_score"] = 100.0
+            result["vital_score"] = np.nan
             result["has_vitals"] = False
             return result
 
@@ -760,7 +764,7 @@ class HealthIndexBuilder:
 
         if not z_cols:
             result = lab_dates[["patient_id", "date_norm"]].copy()
-            result["vital_score"] = 100.0
+            result["vital_score"] = np.nan
             result["has_vitals"] = False
             return result
 
@@ -785,7 +789,7 @@ class HealthIndexBuilder:
 
         if vitals_sorted.empty:
             result = lab_dates[["patient_id", "date_norm"]].copy()
-            result["vital_score"] = 100.0
+            result["vital_score"] = np.nan
             result["has_vitals"] = False
             return result
 
@@ -799,7 +803,7 @@ class HealthIndexBuilder:
         )
 
         merged["has_vitals"] = merged["vital_score"].notna()
-        merged["vital_score"] = merged["vital_score"].fillna(100.0)
+        # vital_score stays NaN when no match — composite logic will use labs-only
 
         # Also flag exact-date vitals matches (has_vitals means vitals ON that date)
         # Build set of (patient_id, date_norm) where vitals actually exist
@@ -872,32 +876,38 @@ class HealthIndexBuilder:
         merged = all_dates.merge(
             lab_result, on=["patient_id", "date_norm"], how="left"
         ).merge(
-            vital_result[
-                ["patient_id", "date_norm", "vital_score", "has_vitals_exact"]
-            ],
+            vital_result[["patient_id", "date_norm", "vital_score", "has_vitals"]],
             on=["patient_id", "date_norm"],
             how="left",
         )
 
-        # Fill missing scores
+        # Determine data availability per row
         has_lab = merged["lab_score"].notna()
-        has_vital_on_date = merged["has_vitals_exact"].fillna(False)
+        has_vital = merged["has_vitals"].fillna(False)
         merged["lab_score"] = merged["lab_score"].fillna(0.0)
-        merged["vital_score"] = merged["vital_score"].fillna(100.0)
+        # vital_score stays NaN when absent — no inflation default
         merged["n_labs"] = merged["n_labs"].fillna(0).astype(int)
         merged["dominant_organ_system"] = merged["dominant_organ_system"].fillna("")
 
-        # Composite score: same weighting logic as build_patient_series
+        # Composite score: adaptive weighting based on data availability
+        #   - Both labs + vitals → weighted composite (uses 30-day lookback vitals)
+        #   - Labs only         → pure lab score (no vital inflation)
+        #   - Vitals only       → pure vital score
         composite = np.where(
-            has_lab & has_vital_on_date,
+            has_lab & has_vital,
             self.lab_weight * merged["lab_score"]
             + self.vital_weight * merged["vital_score"],
             np.where(has_lab, merged["lab_score"], merged["vital_score"]),
         )
         merged["health_score"] = np.round(composite, 2)
 
+        # Data completeness: fraction of signal sources available per row
+        merged["data_completeness"] = (
+            has_lab.astype(float) * 0.5 + has_vital.astype(float) * 0.5
+        )
+
         # Filter out rows with no data at all (no labs AND no vitals)
-        has_any = has_lab | has_vital_on_date
+        has_any = has_lab | has_vital
         merged = merged[has_any].copy()
 
         t2 = _time.perf_counter()
@@ -919,12 +929,13 @@ class HealthIndexBuilder:
                     date=row["date_norm"],
                     health_score=float(row["health_score"]),
                     n_labs=int(row["n_labs"]),
-                    has_vitals=bool(row.get("has_vitals_exact", False)),
+                    has_vitals=bool(row.get("has_vitals", False)),
                     dominant_organ_system=(
                         row["dominant_organ_system"]
                         if row["dominant_organ_system"]
                         else None
                     ),
+                    data_completeness=float(row.get("data_completeness", 0.5)),
                 )
                 snaps.append(snap)
                 pts.append(

@@ -6,6 +6,7 @@ export interface KPI {
   mean_eci: number;
   n_critical: number;
   total_rx: number;
+  mean_data_completeness?: number;
 }
 
 export interface PatientMeta {
@@ -35,6 +36,7 @@ export interface CompositeRow {
   n_comorbidities?: number;
   age?: number;
   med_velocity_score?: number;
+  data_completeness?: number;
 }
 
 export interface VarSummaryRow {
@@ -167,6 +169,7 @@ export interface PatientSummary {
   total_visits: number | null;
   n_lab_draws: number;
   n_prescriptions: number;
+  data_completeness: number | null;
 }
 
 export interface PatientData {
