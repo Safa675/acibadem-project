@@ -24,9 +24,11 @@ cd Acıbadem/
 ./start.sh
 ```
 
-`start.sh` now enforces a single frontend dev instance per repo:
+`start.sh` manages both backend and frontend lifecycle:
 - If an existing `next dev` for this project is already running, it is reused.
+- If a stale Next.js process is detected (alive but port not listening), it is **killed** before relaunching — prevents EADDRINUSE race conditions.
 - If `3000` is busy, it picks the next free port and prints the actual URL.
+- Frontend binds to `127.0.0.1` (avoids IPv6/IPv4 dual-stack binding issues).
 - If a stale `frontend/.next/dev/lock` exists with no running frontend, it is removed automatically.
 - Backend defaults are RAM-first: `ILAY_SKIP_NLP=1` (NLP pipeline off) and no `uvicorn --reload`.
 - To override for debugging: `ILAY_SKIP_NLP=0 ILAY_BACKEND_RELOAD=1 ./start.sh`
@@ -54,12 +56,16 @@ Acıbadem/
 │   ├── health_var.py         ← HealthVaR™: Monte Carlo deterioration forecast
 │   ├── nlp_signal.py         ← NLP: zero-shot NLI transformer
 │   ├── fusion.py             ← Composite Risk Score (AAA–B/CCC credit rating)
+│   ├── chatbot.py            ← AI clinical assistant (Gemini 2.0 Flash via OpenRouter)
 │   ├── outcomes.py           ← Clinical Severity Index (CSI) + outcome prediction
 │   ├── validation.py         ← 5 retrospective validation experiments
 │   ├── advanced_analytics.py ← GARCH vol, drawdown, stress scenarios, rolling metrics
 │   └── visualizer.py         ← matplotlib charts
+├── api.py                        ← FastAPI backend (REST + SSE chatbot)
+├── frontend/                     ← Next.js 16 + React 19 + Tailwind 4 + Recharts
 ├── docs/
 │   ├── CALCULATION_LOGIC.md              ← **PLAIN LANGUAGE guide to all formulas**
+│   ├── MISSING_DATA_EVALUATION.md        ← **Data quality audit** (missingness, coverage, recommendations)
 │   ├── FUSION_WEIGHTS_EVIDENCE.md        ← evidence for composite score weights
 │   ├── HEALTH_INDEX_WEIGHT_JUSTIFICATION.md← evidence for health index weights
 │   └── PARAMETER_EVIDENCE_REPORT.md      ← full parameter justification (PMIDs)
@@ -72,16 +78,16 @@ Acıbadem/
 
 ## Dashboard — 4 Tabs
 
-### 🏥 Tab 1: Cohort Overview
+### Tab 1: Cohort Overview
 Real-time risk intelligence across all monitored patients:
-- KPI cards: active patients, mean health score, high-risk count, critical-state count
+- KPI cards: active patients, mean health score, high-risk count, critical-state count, **mean data completeness**
 - Cohort risk scatter (composite score vs health index, sized by visits)
 - Rating distribution bar chart (AAA → B/CCC)
-- Full cohort table with sortable composite scores, ratings, regime states, VaR tiers
+- Full cohort table with sortable composite scores, ratings, regime states, VaR tiers, **data completeness badge**
 
-### 🔬 Tab 2: Patient Explorer
+### Tab 2: Patient Explorer
 Deep-dive per selected patient:
-- 6 summary metrics (age, sex, composite rating, health index, lab draws, prescriptions)
+- 7 summary metrics (age, sex, composite rating, health index, lab draws, prescriptions, **data completeness**)
 - **PatientRegime™** timeline with prescription event overlay
 - **HealthVaR™** Monte Carlo fan chart
 - NLP sentiment bar chart (per-visit composite score over time)
@@ -89,13 +95,13 @@ Deep-dive per selected patient:
 - Lab time-series (all test values over time)
 - Raw clinical notes expander (ÖYKÜ, YAKINMA, Muayene Notu, Kontrol Notu)
 
-### 🎯 Tab 3: Outcome Predictor
+### Tab 3: Outcome Predictor
 - Clinical Severity Index (CSI) gauge + narrative assessment
 - CSI feature decomposition bar chart
 - Cohort CSI ranking (selected patient highlighted)
 - Predictive feature correlations vs healthcare utilization
 
-### 📊 Tab 4: Validation
+### Tab 4: Validation
 Five retrospective experiments, all run automatically — no doctor labels required.
 
 ---
@@ -139,7 +145,7 @@ Column weights for the composite NLP score:
 ### 4. Composite Risk Score (inspired by credit rating)
 
 Fuses all signals into a single actionable score:
-- **55%** Health Index (lab + vital trajectory)
+- **55%** Health Index (lab + vital trajectory, adaptive weighting)
 - **30%** Clinical NLP signal
 - **15%** Medication change velocity
 
@@ -186,16 +192,18 @@ Tests are classified into organ systems (inflammatory, renal, hepatic, hematolog
 mean_z = Σ (system_mean_z × system_weight) / Σ system_weights
 ```
 
-| System | Weight | Key tests | Evidence |
-|---|---|---|---|
-| inflammatory | 0.25 | CRP, WBC, Neutrophils, Lymphocytes | Strong early-warning (HR 2.07) |
-| renal | 0.18 | Creatinine, Urea, GFR | SOFA/APACHE emphasis |
-| hematological | 0.18 | Haemoglobin, Platelets, MCV, RDW | Anemia predictor (OR 1.99) |
-| metabolic | 0.17 | Glucose, Na, K, Albumin, Cholesterol | Electrolyte OR 3–4 |
-| hepatic | 0.12 | ALT, AST, ALP, GGT, Bilirubin | SOFA hepatic (OR 2.2) |
-| coagulation | 0.07 | INR, PT, aPTT | INR AUC 0.94–0.95 |
-| endocrine | 0.02 | TSH, T3, T4 | Epiphenomenon only |
-| other | 0.01 | all unclassified tests | Catch-all |
+All 8 organ systems are **equally weighted at 12.5% each**, consistent with the SOFA / NEWS2 / APACHE II philosophy of uniform organ importance:
+
+| System | Weight | Key tests |
+|---|---|---|
+| inflammatory | 0.125 | CRP, WBC, Neutrophils, Lymphocytes, Procalcitonin |
+| renal | 0.125 | Creatinine, Urea, GFR |
+| hematological | 0.125 | Haemoglobin, Platelets, MCV, RDW |
+| metabolic | 0.125 | Glucose, HbA1c, Na, K, Ca, Albumin, Cholesterol, LDL, HDL |
+| hepatic | 0.125 | ALT, AST, ALP, GGT, Bilirubin |
+| coagulation | 0.125 | INR, PT, aPTT |
+| endocrine | 0.125 | TSH, T3, T4 |
+| other | 0.125 | all unclassified tests |
 
 **Full keyword mapping:** See `docs/CALCULATION_LOGIC.md` for the complete list of which test names map to which organ system.
 
@@ -209,49 +217,69 @@ Intuition: z = 0 → score = 100; z = 2 → score ≈ 60; z = 4 → score ≈ 20
 
 #### Step 4 — Vital signs scoring (parallel path)
 
-The same **one-sided z-score formula** is applied to each of the four vitals (systolic BP, diastolic BP, pulse, SpO2) against published clinical norms (WHO ISH 2020 / ESH 2018). The mean vital z is transformed identically:
+The same **one-sided z-score formula** is applied to the two active vitals (systolic BP, diastolic BP) against published clinical norms (WHO ISH 2020 / ESH 2018). The mean vital z is transformed identically:
 
 ```
 vital_score = 100 × exp(−0.25 × mean_vital_z)
 ```
 
+**Active vitals (2 of 4):** Pulse and SpO2 were dropped from scoring due to extreme missingness in the dataset (pulse 96.7% missing, SpO2 99.7% missing). They remain in the raw data loader for benchmark scripts (NEWS2, SOFA, APACHE II) but do not contribute to the health index.
+
 **One-sided z-score explained:**
 - Values **inside** the reference range → z = 0 (no penalty, healthy)
-- Values **below** the reference range → z = positive (penalized, e.g., low SpO2, low BP)
-- Values **above** the reference range → z = positive (penalized, e.g., high BP, high pulse)
+- Values **below** the reference range → z = positive (penalized, e.g., low BP)
+- Values **above** the reference range → z = positive (penalized, e.g., high BP)
 
 **Key difference from traditional z-score:** We do NOT penalize values comfortably within the range. A traditional z-score would penalize CRP=0 as "2 standard deviations below the mean" — but CRP=0 is perfectly healthy (no inflammation). Our one-sided approach correctly assigns z=0 to all in-range values.
 
 **30-day lookup rule:**
 1. Find the **nearest past vital signs visit** on or before the scoring date
 2. If the nearest visit is **within 30 days** → use those vitals
-3. If the nearest visit is **older than 30 days** OR no vitals exist → `vital_score = 100`
+3. If the nearest visit is **older than 30 days** OR no vitals exist → vital_score is **omitted** (NaN)
 
 **Why 30 days?** Outpatient vitals become stale quickly. A BP measurement from 60 days ago may not reflect current status. The 30-day window balances recency with data availability.
 
-**Conservative default:** If vitals are missing or outdated, we assume `vital_score = 100` (normal). This is **conservative** — we do not penalize patients for missing data, which could introduce bias against patients with sparse records.
+**Missingness-aware default:** If vitals are missing or outdated, the vital_score is set to NaN and the composite reverts to a **pure lab score** (see Step 5). This prevents score inflation — previously, missing vitals defaulted to 100 (perfectly healthy), which inflated scores for the 89.5% of patients with no vitals data.
 
-| Vital Sign | Normal Range | Source |
-|---|---|---|
-| Systolic BP | 90–130 mmHg | WHO ISH 2020 / ESH 2018 |
-| Diastolic BP | 60–85 mmHg | WHO ISH 2020 / ESH 2018 |
-| Pulse | 60–100 bpm | Standard clinical range |
-| SpO2 | 95–100% | WHO / BTS guidelines |
+| Vital Sign | Normal Range | Source | Status |
+|---|---|---|---|
+| Systolic BP | 90–130 mmHg | WHO ISH 2020 / ESH 2018 | Active |
+| Diastolic BP | 60–85 mmHg | WHO ISH 2020 / ESH 2018 | Active |
+| Pulse | 60–100 bpm | Standard clinical range | Dropped (96.7% missing) |
+| SpO2 | 95–100% | WHO / BTS guidelines | Dropped (99.7% missing) |
 
-#### Step 5 — Composite health score per date
+#### Step 5 — Adaptive composite health score per date
 
 ```
 if both labs AND vitals available:
-    health_score = 0.60 × lab_score + 0.40 × vital_score
+    health_score = 0.55 × lab_score + 0.45 × vital_score
 
-if only labs:
+if only labs (vitals missing or stale):
     health_score = lab_score
 
 if only vitals:
     health_score = vital_score
 ```
 
-**Output:** A `HealthSnapshot` time-series, one point per unique lab-draw or vital-visit date, with `health_score ∈ [0, 100]`.
+This is **missingness-aware weighting**: patients without vitals receive a pure lab score instead of an inflated composite. The vital weight (45%) is derived from NEWS AUROC 0.867 evidence and is only applied when real vitals exist.
+
+#### Step 6 — Data completeness tracking
+
+Each snapshot records a `data_completeness` field in **[0.0, 1.0]**:
+
+```
+data_completeness = (0.5 if labs present) + (0.5 if vitals present)
+```
+
+| Value | Meaning |
+|---|---|
+| 1.0 | Full signal — both labs and vitals |
+| 0.5 | Partial — labs only or vitals only |
+| 0.0 | No data (theoretical; filtered in practice) |
+
+This field is surfaced in the API and frontend as a transparency metric. In the current dataset: ~98% of snapshots have dc=0.5 (labs only), ~2% have dc=1.0 (labs + vitals).
+
+**Output:** A `HealthSnapshot` time-series, one point per unique lab-draw or vital-visit date, with `health_score ∈ [0, 100]`, `has_vitals`, `dominant_organ_system`, and `data_completeness`.
 
 ---
 
@@ -813,14 +841,16 @@ Start here — no coding required:
 | Document | What It Explains | Why Read It |
 |----------|------------------|-------------|
 | **`docs/CALCULATION_LOGIC.md`** | **Plain language guide to all formulas** | Understand exactly how scores are calculated without reading code |
+| **`docs/MISSING_DATA_EVALUATION.md`** | **Data quality audit** — missingness rates, coverage gaps, recommendations | Understand data limitations and how the system handles missing vitals/labs |
 | `docs/PARAMETER_EVIDENCE_REPORT.md` | Clinical evidence for all parameters (PMIDs included) | See which guidelines and studies justify each number |
 | `docs/FUSION_WEIGHTS_EVIDENCE.md` | Why 55% labs, 30% NLP, 15% meds | Evidence from Rajkomar 2018, Garriga 2023, polypharmacy meta-analyses |
 
 **Key questions answered:**
 - Why is CRP=0 not penalized but Hemoglobin=8 is? → **One-sided z-score** (see CALCULATION_LOGIC.md Step 1)
-- What happens if vitals are missing? → **30-day rule + conservative default** (see CALCULATION_LOGIC.md Step 6)
-- Which organ systems matter most? → **Inflammatory 25%, Renal 25%, Metabolic 20%** (see HEALTH_INDEX_WEIGHT_JUSTIFICATION.md)
+- What happens if vitals are missing? → **Adaptive weighting: pure lab score replaces inflated composite** (see Step 5 above)
+- Which organ systems matter most? → **All 8 organ systems weighted equally at 12.5%** (SOFA/APACHE uniform philosophy)
 - Why these specific weights? → **SOFA/APACHE comparison + outcome studies** (see PARAMETER_EVIDENCE_REPORT.md)
+- How can I tell if a patient's score is based on full data? → **`data_completeness` field** (1.0 = labs + vitals, 0.5 = labs only)
 
 ---
 
@@ -841,7 +871,7 @@ Assumes today's volatility regime is representative of near-term future — same
 
 | Document | What It Explains |
 |----------|------------------|
-| `src/health_index.py` | Lab/vital scoring (z-score, organ weights, exponential decay) |
+| `src/health_index.py` | Lab/vital scoring (z-score, equal organ weights, exponential decay, adaptive weighting) |
 | `src/patient_regime.py` | 4-state classification (trend × volatility grid) |
 | `src/health_var.py` | Monte Carlo VaR (5,000 iterations, bootstrap) |
 | `src/fusion.py` | Composite fusion (55/30/15, credit rating tiers) |
@@ -855,6 +885,7 @@ Assumes today's volatility regime is representative of near-term future — same
 | Document | What It Explains |
 |----------|------------------|
 | `docs/HEALTH_INDEX_WEIGHT_JUSTIFICATION.md` | Organ weight derivation from SOFA/APACHE II |
+| `docs/MISSING_DATA_EVALUATION.md` | Full missingness audit — vital/lab/NLP coverage, score inflation analysis |
 | `docs/PARAMETER_EVIDENCE_REPORT.md` | Full parameter table with PMIDs (vital ranges, decay constant λ=0.25) |
 | `src/validation.py` | 5 retrospective experiments (Spearman ρ, no labels needed) |
 | `src/advanced_analytics.py` | 12 finance→healthcare transfers (GARCH, Kelly, Ulcer Index) |
@@ -868,7 +899,10 @@ Assumes today's volatility regime is representative of near-term future — same
 2. **Irregular lab spacing** — regime uses observation-indexed time, not calendar time
 3. **No clinical ground truth** — Critical state NOT validated against APACHE/SOFA
 4. **Threshold calibration** — regime percentiles tuned heuristically, not from clinical data
-5. **NLP coverage** — ~70 keywords; will miss rare medical abbreviations
+5. **NLP coverage** — only 0.13% of patients (100/77,204) have NLP scores; the 30% NLP weight is redistributed for 99.87% of patients
+6. **Vital signs sparsity** — 89.5% of patients have zero vitals; only systolic/diastolic BP are scored (pulse 96.7% missing, SpO2 99.7% missing). Missingness-aware weighting prevents score inflation but the model is effectively lab-only for most patients.
+7. **Lab reference range gaps** — 12% of lab rows (842K) lack reference ranges from any source and receive z=0 (invisible to scoring)
+8. **Data completeness transparency** — the `data_completeness` field (0.0–1.0) is surfaced in the API and UI so clinicians can assess signal quality per patient
 
 ---
 
