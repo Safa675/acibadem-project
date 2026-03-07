@@ -36,10 +36,21 @@ from .sut_pricing import (
     estimate_patient_sut_costs,
     compute_all_sut_costs,
     estimate_cohort_sut_summary,
+    compute_drg_summary,
+    compute_cost_var,
+    compute_reimbursement_gaps,
+    compute_cost_trajectory,
     PatientSUTEstimate,
     SUTCostBreakdown,
     SUT_LAB_PRICES,
     COST_TIERS,
+    DRGEpisode,
+    DRGSummary,
+    CostVaRResult,
+    ReimbursementGap,
+    ReimbursementGapAnalysis,
+    CostTrajectoryPoint,
+    CostTrajectory,
 )
 from .visualizer import (
     plot_regime_timeline,
@@ -60,6 +71,18 @@ from .validation import (
     ValidationResult,
     run_all_validations,
     validation_summary_df,
+)
+from .score_sofa import (
+    compute_all_sofa,
+    aggregate_per_patient as aggregate_sofa_per_patient,
+)
+from .score_news2 import (
+    compute_all_news2,
+    aggregate_per_patient as aggregate_news2_per_patient,
+)
+from .score_apache2 import (
+    compute_all_apache2,
+    aggregate_per_patient as aggregate_apache2_per_patient,
 )
 
 __all__ = [
@@ -99,10 +122,21 @@ __all__ = [
     "estimate_patient_sut_costs",
     "compute_all_sut_costs",
     "estimate_cohort_sut_summary",
+    "compute_drg_summary",
+    "compute_cost_var",
+    "compute_reimbursement_gaps",
+    "compute_cost_trajectory",
     "PatientSUTEstimate",
     "SUTCostBreakdown",
     "SUT_LAB_PRICES",
     "COST_TIERS",
+    "DRGEpisode",
+    "DRGSummary",
+    "CostVaRResult",
+    "ReimbursementGap",
+    "ReimbursementGapAnalysis",
+    "CostTrajectoryPoint",
+    "CostTrajectory",
     "plot_regime_timeline",
     "plot_health_var_fan",
     "plot_nlp_heatmap",
@@ -117,6 +151,12 @@ __all__ = [
     "ValidationResult",
     "run_all_validations",
     "validation_summary_df",
+    "compute_all_sofa",
+    "aggregate_sofa_per_patient",
+    "compute_all_news2",
+    "aggregate_news2_per_patient",
+    "compute_all_apache2",
+    "aggregate_apache2_per_patient",
 ]
 
 # ---------------------------------------------------------------------------

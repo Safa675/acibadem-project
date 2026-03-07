@@ -54,17 +54,26 @@ from src.sut_pricing import (
     compute_all_sut_costs,
     estimate_cohort_sut_summary,
     estimate_patient_sut_costs,
+    compute_drg_summary,
+    compute_cost_var,
+    compute_reimbursement_gaps,
+    compute_cost_trajectory,
+    DRGSummary,
+    DRGEpisode,
+    CostVaRResult,
+    ReimbursementGapAnalysis,
+    CostTrajectory,
 )
 from src.health_var import compute_all_vars_parallel
-from scripts.score_sofa import (
+from src.score_sofa import (
     compute_all_sofa,
     aggregate_per_patient as aggregate_sofa_per_patient,
 )
-from scripts.score_news2 import (
+from src.score_news2 import (
     compute_all_news2,
     aggregate_per_patient as aggregate_news2_per_patient,
 )
-from scripts.score_apache2 import (
+from src.score_apache2 import (
     compute_all_apache2,
     aggregate_per_patient as aggregate_apache2_per_patient,
 )
@@ -595,7 +604,9 @@ def _load_pipeline() -> dict:
     # ── SUT Pricing (Sağlık Uygulama Tebliği cost estimation) ────────────
     logger.info("Computing SUT cost estimates...")
     t_sut = time.perf_counter()
-    sut_by_pid = compute_all_sut_costs(lab_df, ana_df, rec_df, sorted(all_series.keys()))
+    sut_by_pid = compute_all_sut_costs(
+        lab_df, ana_df, rec_df, sorted(all_series.keys())
+    )
     sut_cohort_summary = estimate_cohort_sut_summary(sut_by_pid)
     logger.info(
         "SUT costs computed for %d patients in %.1fs",
@@ -666,16 +677,28 @@ def _load_pipeline() -> dict:
         regime_dist_cached[state_str] = regime_dist_cached.get(state_str, 0) + 1
 
     # ── Trim raw DataFrames: keep only columns needed by endpoints ────────
-    # lab_df: patient_id, date, test_name, value, ref_min, ref_max
+    # lab_df: patient_id, date, test_name, value, ref_min, ref_max, ISLEMTARIHI
     #   (drops: unit, cohort)
-    lab_keep = ["patient_id", "date", "test_name", "value", "ref_min", "ref_max"]
+    lab_keep = [
+        "patient_id",
+        "date",
+        "test_name",
+        "value",
+        "ref_min",
+        "ref_max",
+        "ISLEMTARIHI",
+    ]
     lab_df = lab_df[[c for c in lab_keep if c in lab_df.columns]].copy()
 
-    # ana_df: patient_id, visit_date, 6 comorbidity cols, 5 text cols
-    #   (drops: age, sex, vitals, BMI, los_days, episode, diagnosis, etc.)
+    # ana_df: patient_id, visit_date, TANIKODU, los_days, GELISTARIHI,
+    #   6 comorbidity cols, 5 text cols
+    #   (drops: age, sex, vitals, BMI, episode, etc.)
     ana_keep = [
         "patient_id",
         "visit_date",
+        "TANIKODU",
+        "los_days",
+        "GELISTARIHI",
         "Hipertansiyon Hastada",
         "Kalp Damar Hastada",
         "Diyabet Hastada",
@@ -1368,6 +1391,11 @@ def get_patient_outcome(patient_id: str):
 
     # SUT cost response object
     sut_cost = None
+    drg_data = None
+    cost_var_data = None
+    gap_data = None
+    trajectory_data = None
+
     if sut_estimate:
         sut_cost = {
             "cost_min": sut_estimate.cost_min,
@@ -1399,6 +1427,107 @@ def get_patient_outcome(patient_id: str):
             "n_procedures": sut_estimate.n_procedures,
         }
 
+        # Phase 4b: DRG Episode Cost Modeling
+        try:
+            ana_df_full = ctx["ana_df"]
+            drg = compute_drg_summary(patient_id, ana_df_full, sut_estimate)
+            drg_data = {
+                "n_episodes": drg.n_episodes,
+                "total_drg_cost": drg.total_drg_cost,
+                "mean_episode_cost": drg.mean_episode_cost,
+                "most_expensive_drg": drg.most_expensive_drg,
+                "dominant_icd10_chapter": drg.dominant_icd10_chapter,
+                "episodes": [
+                    {
+                        "episode_id": ep.episode_id,
+                        "primary_icd10": ep.primary_icd10,
+                        "primary_icd10_chapter": ep.primary_icd10_chapter,
+                        "description": ep.description,
+                        "los_days": ep.los_days,
+                        "lab_cost": ep.lab_cost,
+                        "visit_cost": ep.visit_cost,
+                        "rx_cost": ep.rx_cost,
+                        "procedure_cost": ep.procedure_cost,
+                        "total_cost": ep.total_cost,
+                        "admission_date": ep.admission_date,
+                        "discharge_date": ep.discharge_date,
+                    }
+                    for ep in drg.episodes[:10]  # Cap at 10 episodes
+                ],
+            }
+        except Exception as e:
+            logger.warning("DRG computation failed for %s: %s", patient_id, e)
+
+        # Phase 4c: Cost VaR (Monte Carlo)
+        try:
+            var_result = compute_cost_var(patient_id, sut_estimate, seed=42)
+            cost_var_data = {
+                "confidence_level": var_result.confidence_level,
+                "var_amount": var_result.var_amount,
+                "expected_cost": var_result.expected_cost,
+                "cvar_amount": var_result.cvar_amount,
+                "cost_p5": var_result.cost_p5,
+                "cost_p25": var_result.cost_p25,
+                "cost_p50": var_result.cost_p50,
+                "cost_p75": var_result.cost_p75,
+                "cost_p95": var_result.cost_p95,
+                "simulation_count": var_result.simulation_count,
+                "cost_distribution": var_result.cost_distribution,
+            }
+        except Exception as e:
+            logger.warning("Cost VaR computation failed for %s: %s", patient_id, e)
+
+        # Phase 4d: Reimbursement Gap Analysis
+        try:
+            gap_result = compute_reimbursement_gaps(patient_id, sut_estimate)
+            gap_data = {
+                "total_estimated_cost": gap_result.total_estimated_cost,
+                "total_reimbursement": gap_result.total_reimbursement,
+                "total_gap": gap_result.total_gap,
+                "overall_coverage_pct": gap_result.overall_coverage_pct,
+                "risk_rating": gap_result.risk_rating,
+                "gaps": [
+                    {
+                        "category": g.category,
+                        "estimated_actual_cost": g.estimated_actual_cost,
+                        "sut_reimbursement": g.sut_reimbursement,
+                        "gap_amount": g.gap_amount,
+                        "gap_percent": g.gap_percent,
+                        "status": g.status,
+                    }
+                    for g in gap_result.gaps
+                ],
+            }
+        except Exception as e:
+            logger.warning("Gap analysis failed for %s: %s", patient_id, e)
+
+        # Phase 4e: Cost Trajectory Forecasting
+        try:
+            lab_df_full = ctx["lab_df"]
+            ana_df_full = ctx["ana_df"]
+            traj = compute_cost_trajectory(
+                patient_id, ana_df_full, lab_df_full, sut_estimate
+            )
+            trajectory_data = {
+                "total_forecast_cost": traj.total_forecast_cost,
+                "forecast_horizon_months": traj.forecast_horizon_months,
+                "trend": traj.trend,
+                "monthly_burn_rate": traj.monthly_burn_rate,
+                "projected_annual_cost": traj.projected_annual_cost,
+                "trajectory": [
+                    {
+                        "period": pt.period,
+                        "cumulative_cost": pt.cumulative_cost,
+                        "period_cost": pt.period_cost,
+                        "n_visits": pt.n_visits,
+                        "n_tests": pt.n_tests,
+                    }
+                    for pt in traj.trajectory
+                ],
+            }
+        except Exception as e:
+            logger.warning("Cost trajectory failed for %s: %s", patient_id, e)
+
     return {
         "eci": eci,
         "narrative": narrative,
@@ -1408,6 +1537,10 @@ def get_patient_outcome(patient_id: str):
         "cohort_total": int(len(eci_df)) if not eci_df.empty else 0,
         "feature_correlations": corr_data,
         "sut_cost": sut_cost,
+        "drg_summary": drg_data,
+        "cost_var": cost_var_data,
+        "reimbursement_gaps": gap_data,
+        "cost_trajectory": trajectory_data,
     }
 
 

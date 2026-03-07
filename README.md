@@ -1,910 +1,961 @@
-# ILAY 🏥
-### AI-Powered Clinical Risk Intelligence
-**ACUHIT Healthcare Innovation & Technology Hackathon 2026 — Acıbadem University**
+# ILAY -- AI Clinical Risk Intelligence Platform
+
+**ACUHIT 2026 Hackathon | Acibadem University**
+
+ILAY is a clinical risk intelligence platform that transforms raw healthcare data (lab results, clinical visits, prescriptions, clinical notes) into actionable patient risk scores using quantitative finance methodologies adapted for healthcare. The platform applies Value-at-Risk modeling, credit-rating-style scoring, and NLP-driven sentiment analysis to Turkish clinical data.
 
 ---
 
-## What is this?
+## Table of Contents
 
-ILAY repurposes **quantitative finance risk tools** (regime detection, Value-at-Risk, credit rating, NLP signal extraction) for real-time clinical decision support on hospital patient data.
-
-The core insight: **lab test time-series behave like financial time-series. Patient clinical states map directly to market regimes. Health risk scoring is structurally identical to credit risk modeling.**
-
----
-
-## Quick Start
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-
-# Launch the interactive app
-cd Acıbadem/
-./start.sh
-```
-
-`start.sh` manages both backend and frontend lifecycle:
-- If an existing `next dev` for this project is already running, it is reused.
-- If a stale Next.js process is detected (alive but port not listening), it is **killed** before relaunching — prevents EADDRINUSE race conditions.
-- If `3000` is busy, it picks the next free port and prints the actual URL.
-- Frontend binds to `127.0.0.1` (avoids IPv6/IPv4 dual-stack binding issues).
-- If a stale `frontend/.next/dev/lock` exists with no running frontend, it is removed automatically.
-- Backend defaults are RAM-first: `ILAY_SKIP_NLP=1` (NLP pipeline off) and no `uvicorn --reload`.
-- To override for debugging: `ILAY_SKIP_NLP=0 ILAY_BACKEND_RELOAD=1 ./start.sh`
-
-If startup was interrupted and you want a hard reset:
-
-```bash
-pkill -f "/home/safa/Documents/Acıbadem/frontend/node_modules/.bin/next dev" || true
-rm -f /home/safa/Documents/Acıbadem/frontend/.next/dev/lock
-./start.sh
-```
+- [Architecture Overview](#architecture-overview)
+- [Data Pipeline](#data-pipeline)
+- [Core Metrics](#core-metrics)
+  - [1. Health Index](#1-health-index)
+  - [2. Patient Regime Classification](#2-patient-regime-classification)
+  - [3. Health Value-at-Risk (VaR)](#3-health-value-at-risk-var)
+  - [4. NLP Clinical Sentiment](#4-nlp-clinical-sentiment)
+  - [5. Composite Risk Score](#5-composite-risk-score)
+  - [6. Expected Cost Intensity (ECI)](#6-expected-cost-intensity-eci)
+  - [7. SUT Cost Estimation](#7-sut-cost-estimation)
+  - [8. Clinical Severity Index (CSI)](#8-clinical-severity-index-csi)
+  - [9. Feature Correlations (Spearman)](#9-feature-correlations-spearman)
+- [Validation Framework](#validation-framework)
+- [API Reference](#api-reference)
+- [Frontend Structure](#frontend-structure)
+- [Score Polarity Contracts](#score-polarity-contracts)
+- [Tech Stack](#tech-stack)
 
 ---
 
-## Directory Structure
-
-```
-Acıbadem/
-├── requirements.txt          ← pinned dependencies
-├── src/
-│   ├── __init__.py           ← public API exports
-│   ├── data_loader.py        ← ODS parsers (labdata, anadata, recete)
-│   ├── health_index.py       ← HealthIndexBuilder: lab + vitals → scalar [0,100]
-│   ├── patient_regime.py     ← PatientRegime™: 4-state clinical state machine
-│   ├── health_var.py         ← HealthVaR™: Monte Carlo deterioration forecast
-│   ├── nlp_signal.py         ← NLP: zero-shot NLI transformer
-│   ├── fusion.py             ← Composite Risk Score (AAA–B/CCC credit rating)
-│   ├── chatbot.py            ← AI clinical assistant (Gemini 2.0 Flash via OpenRouter)
-│   ├── outcomes.py           ← Clinical Severity Index (CSI) + outcome prediction
-│   ├── validation.py         ← 5 retrospective validation experiments
-│   ├── advanced_analytics.py ← GARCH vol, drawdown, stress scenarios, rolling metrics
-│   └── visualizer.py         ← matplotlib charts
-├── api.py                        ← FastAPI backend (REST + SSE chatbot)
-├── frontend/                     ← Next.js 16 + React 19 + Tailwind 4 + Recharts
-├── docs/
-│   ├── CALCULATION_LOGIC.md              ← **PLAIN LANGUAGE guide to all formulas**
-│   ├── MISSING_DATA_EVALUATION.md        ← **Data quality audit** (missingness, coverage, recommendations)
-│   ├── FUSION_WEIGHTS_EVIDENCE.md        ← evidence for composite score weights
-│   ├── HEALTH_INDEX_WEIGHT_JUSTIFICATION.md← evidence for health index weights
-│   └── PARAMETER_EVIDENCE_REPORT.md      ← full parameter justification (PMIDs)
-
-├── papers/                   ← reference clinical literature
-└── *.ods                     ← labdata.ods · anadata.ods · recete.ods
-```
-
----
-
-## Dashboard — 4 Tabs
-
-### Tab 1: Cohort Overview
-Real-time risk intelligence across all monitored patients:
-- KPI cards: active patients, mean health score, high-risk count, critical-state count, **mean data completeness**
-- Cohort risk scatter (composite score vs health index, sized by visits)
-- Rating distribution bar chart (AAA → B/CCC)
-- Full cohort table with sortable composite scores, ratings, regime states, VaR tiers, **data completeness badge**
-
-### Tab 2: Patient Explorer
-Deep-dive per selected patient:
-- 7 summary metrics (age, sex, composite rating, health index, lab draws, prescriptions, **data completeness**)
-- **PatientRegime™** timeline with prescription event overlay
-- **HealthVaR™** Monte Carlo fan chart
-- NLP sentiment bar chart (per-visit composite score over time)
-- **NLP Validation table** — every clinical note scored by Zero-Shot NLI, with an overall NLP score footer and CSV download
-- Lab time-series (all test values over time)
-- Raw clinical notes expander (ÖYKÜ, YAKINMA, Muayene Notu, Kontrol Notu)
-
-### Tab 3: Outcome Predictor
-- Clinical Severity Index (CSI) gauge + narrative assessment
-- CSI feature decomposition bar chart
-- Cohort CSI ranking (selected patient highlighted)
-- Predictive feature correlations vs healthcare utilization
-
-### Tab 4: Validation
-Five retrospective experiments, all run automatically — no doctor labels required.
-
----
-
-## The 5 Analysis Engines
-
-### 1. PatientRegime™ (inspired by market regime detection)
-
-Maps a patient's health score trajectory to 4 clinical states using two dimensions simultaneously:
-
-| | Low Volatility | High Volatility |
-|---|---|---|
-| **Improving Trend** | 🟢 **STABLE** | 🟡 **RECOVERING** |
-| **Declining Trend** | 🟠 **DETERIORATING** | 🔴 **CRITICAL** |
-
-- **Trend** = health score vs 3-draw moving average
-- **Volatility** = rolling standard deviation percentile rank
-
-### 2. HealthVaR™ (inspired by financial Value-at-Risk)
-
-> *"With 95% confidence, this patient's health score will NOT fall below X in the next 3 lab draws."*
-
-Monte Carlo bootstrap over health score return history → probability cone → 5th percentile = Health VaR.
-
-Risk tiers: 🟢 GREEN (VaR > +5%) → 🟡 YELLOW → 🟠 ORANGE → 🔴 RED (VaR < −10%)
-
-### 3. NLP Signal - Zero-Shot NLI
-
-Scores each visit's free-text notes across **all 5 available note types** (ÖYKÜ, Muayene Notu, Kontrol Notu, YAKINMA, Tedavi Notu) on a spectrum from −1.0 (deterioration) to +1.0 (recovery).
-
-Column weights for the composite NLP score:
-
-| Column | Weight |
-|---|---|
-| ÖYKÜ (patient history) | 35% |
-| Muayene Notu (exam note) | 30% |
-| Kontrol Notu (follow-up) | 20% |
-| YAKINMA (chief complaint) | 10% |
-| Tedavi Notu (treatment note) | 5% |
-
-### 4. Composite Risk Score (inspired by credit rating)
-
-Fuses all signals into a single actionable score:
-- **55%** Health Index (lab + vital trajectory, adaptive weighting)
-- **30%** Clinical NLP signal
-- **15%** Medication change velocity
-
-Output: **AAA / AA / A / BBB / BB / B/CCC**
-
-### 5. Clinical Severity Index (CSI)
-
-Integrates: health trend · lab volatility · Critical regime fraction · NLP signal · prescription intensity · comorbidity burden → predicts healthcare utilization.
-
----
-
-## Metric Computation Reference
-
-> This section documents **exactly how every composite metric is calculated**, tracing the logic from raw data all the way to the final number. All references are to files under `src/`.
-
----
-
-### Metric 1 — Health Index (`src/health_index.py`)
-
-**Purpose:** Convert raw lab results and vital signs into a single scalar score in **[0, 100]** where 100 = perfectly normal and 0 = maximally abnormal.
-
-#### Step 1 — Lab z-score per test
-
-For every lab result on a given draw date, a one-sided z-score is computed against the hospital-supplied reference range (or the NexGene AI fallback reference intervals):
-
-```
-ref_std = (ref_max − ref_min) / 4          # assumes ±2σ spans 95% interval
-if value < ref_min:   z = (ref_min − value) / ref_std   # below range
-elif value > ref_max: z = (value − ref_max) / ref_std   # above range
-else:                 z = 0.0                            # within range → healthy
-```
-
-Key design decision: z is **one-sided** — a value comfortably within the range gets z = 0 regardless of its distance from the midpoint. This prevents false penalisation for tests like CRP (where 0 is perfectly healthy but midpoint-z would give |z| ≈ 2).
-
-Reference ranges are sourced in priority order:
-1. Hospital-supplied `REFMIN` / `REFMAX` columns from `labdata.ods`
-2. Fallback: NexGene AI reference intervals (Medical Reasoning API, asa-mini model) for ~22 common analytes
-
-#### Step 2 — Organ-system grouping and weighted mean z
-
-Tests are classified into organ systems (inflammatory, renal, hepatic, hematological, metabolic, endocrine, coagulation, other) via keyword matching on the test name. Within each organ system the mean z-score is computed. Then organ systems are aggregated with a weighted sum:
-
-```
-mean_z = Σ (system_mean_z × system_weight) / Σ system_weights
-```
-
-All 8 organ systems are **equally weighted at 12.5% each**, consistent with the SOFA / NEWS2 / APACHE II philosophy of uniform organ importance:
-
-| System | Weight | Key tests |
-|---|---|---|
-| inflammatory | 0.125 | CRP, WBC, Neutrophils, Lymphocytes, Procalcitonin |
-| renal | 0.125 | Creatinine, Urea, GFR |
-| hematological | 0.125 | Haemoglobin, Platelets, MCV, RDW |
-| metabolic | 0.125 | Glucose, HbA1c, Na, K, Ca, Albumin, Cholesterol, LDL, HDL |
-| hepatic | 0.125 | ALT, AST, ALP, GGT, Bilirubin |
-| coagulation | 0.125 | INR, PT, aPTT |
-| endocrine | 0.125 | TSH, T3, T4 |
-| other | 0.125 | all unclassified tests |
-
-**Full keyword mapping:** See `docs/CALCULATION_LOGIC.md` for the complete list of which test names map to which organ system.
-
-#### Step 3 — Exponential decay to health score
-
-```
-lab_score = 100 × exp(−0.25 × mean_z)
-```
-
-Intuition: z = 0 → score = 100; z = 2 → score ≈ 60; z = 4 → score ≈ 20; z ≥ 8 → score ≈ 0.
-
-#### Step 4 — Vital signs scoring (parallel path)
-
-The same **one-sided z-score formula** is applied to the two active vitals (systolic BP, diastolic BP) against published clinical norms (WHO ISH 2020 / ESH 2018). The mean vital z is transformed identically:
-
-```
-vital_score = 100 × exp(−0.25 × mean_vital_z)
-```
-
-**Active vitals (2 of 4):** Pulse and SpO2 were dropped from scoring due to extreme missingness in the dataset (pulse 96.7% missing, SpO2 99.7% missing). They remain in the raw data loader for benchmark scripts (NEWS2, SOFA, APACHE II) but do not contribute to the health index.
-
-**One-sided z-score explained:**
-- Values **inside** the reference range → z = 0 (no penalty, healthy)
-- Values **below** the reference range → z = positive (penalized, e.g., low BP)
-- Values **above** the reference range → z = positive (penalized, e.g., high BP)
-
-**Key difference from traditional z-score:** We do NOT penalize values comfortably within the range. A traditional z-score would penalize CRP=0 as "2 standard deviations below the mean" — but CRP=0 is perfectly healthy (no inflammation). Our one-sided approach correctly assigns z=0 to all in-range values.
-
-**30-day lookup rule:**
-1. Find the **nearest past vital signs visit** on or before the scoring date
-2. If the nearest visit is **within 30 days** → use those vitals
-3. If the nearest visit is **older than 30 days** OR no vitals exist → vital_score is **omitted** (NaN)
-
-**Why 30 days?** Outpatient vitals become stale quickly. A BP measurement from 60 days ago may not reflect current status. The 30-day window balances recency with data availability.
-
-**Missingness-aware default:** If vitals are missing or outdated, the vital_score is set to NaN and the composite reverts to a **pure lab score** (see Step 5). This prevents score inflation — previously, missing vitals defaulted to 100 (perfectly healthy), which inflated scores for the 89.5% of patients with no vitals data.
-
-| Vital Sign | Normal Range | Source | Status |
-|---|---|---|---|
-| Systolic BP | 90–130 mmHg | WHO ISH 2020 / ESH 2018 | Active |
-| Diastolic BP | 60–85 mmHg | WHO ISH 2020 / ESH 2018 | Active |
-| Pulse | 60–100 bpm | Standard clinical range | Dropped (96.7% missing) |
-| SpO2 | 95–100% | WHO / BTS guidelines | Dropped (99.7% missing) |
-
-#### Step 5 — Adaptive composite health score per date
-
-```
-if both labs AND vitals available:
-    health_score = 0.55 × lab_score + 0.45 × vital_score
-
-if only labs (vitals missing or stale):
-    health_score = lab_score
-
-if only vitals:
-    health_score = vital_score
-```
-
-This is **missingness-aware weighting**: patients without vitals receive a pure lab score instead of an inflated composite. The vital weight (45%) is derived from NEWS AUROC 0.867 evidence and is only applied when real vitals exist.
-
-#### Step 6 — Data completeness tracking
-
-Each snapshot records a `data_completeness` field in **[0.0, 1.0]**:
-
-```
-data_completeness = (0.5 if labs present) + (0.5 if vitals present)
-```
-
-| Value | Meaning |
-|---|---|
-| 1.0 | Full signal — both labs and vitals |
-| 0.5 | Partial — labs only or vitals only |
-| 0.0 | No data (theoretical; filtered in practice) |
-
-This field is surfaced in the API and frontend as a transparency metric. In the current dataset: ~98% of snapshots have dc=0.5 (labs only), ~2% have dc=1.0 (labs + vitals).
-
-**Output:** A `HealthSnapshot` time-series, one point per unique lab-draw or vital-visit date, with `health_score ∈ [0, 100]`, `has_vitals`, `dominant_organ_system`, and `data_completeness`.
-
----
-
-### Metric 2 — PatientRegime™ (`src/patient_regime.py`)
-
-**Purpose:** Classify each observation in the health score time-series into one of four clinical states using a 2×2 grid of (trend direction × volatility level), inspired by market regime detection.
-
-#### Step 1 – Rolling moving average (MA, window = 3 draws)
-
-```
-MA[i] = mean(scores[i − 2 : i + 1])
-```
-
-The first 2 observations have no MA and are left unclassified.
-
-#### Step 2 — Rolling standard deviation (volatility, window = 4 draws)
-
-```
-vol[i] = std(scores[i − 3 : i + 1], ddof=1)
-```
-
-Requires at least 3 observations; otherwise returns `None`.
-
-#### Step 3 — Volatility percentile rank (lookback = 20 draws)
-
-Each `vol[i]` is ranked within the patient's own historical volatility up to that point:
-
-```
-vol_percentile[i] = count(historical_vols ≤ vol[i]) / len(historical_vols) × 100
-```
-
-Requires ≥ 3 non-null historical vol values; defaults to 50.0 (neutral) otherwise. This is **self-normalising per patient** — it compares against each patient's own baseline.
-
-#### Step 4 — Boolean flags
-
-```
-trend_positive = (health_score[i] >= MA[i])
-vol_high       = (vol_percentile[i] >= 60.0)    # 60th-percentile threshold
-```
-
-#### Step 5 — 2×2 state assignment
-
-```
-trend_positive=True,  vol_high=False → STABLE        🟢
-trend_positive=True,  vol_high=True  → RECOVERING     🟡
-trend_positive=False, vol_high=False → DETERIORATING  🟠
-trend_positive=False, vol_high=True  → CRITICAL       🔴
-```
-
-**Output:** A `PatientRegimeResult` with a `RegimePoint` per date containing MA, rolling_vol, vol_percentile, trend_positive, vol_high, and state.
-
----
-
-### Metric 3 — HealthVaR™ (`src/health_var.py`)
-
-**Purpose:** Quantify downside risk over the next N lab draws with a Monte Carlo simulation — analogous to financial Value-at-Risk. Answers: *"With 95% confidence, this patient's health score will NOT fall below X in the next 3 draws."*
-
-#### Step 1 — Arithmetic returns
-
-```
-returns[i] = (score[i] − score[i−1]) / max(score[i−1], 1.0)
-```
-
-Arithmetic (not log) returns are used because log-returns are numerically explosive when health scores approach zero.
-
-#### Step 2 — Monte Carlo bootstrap (5,000 iterations)
-
-For each of 5,000 paths:
-1. Start from `current_score = scores[-1]` (most recent)
-2. For each of `horizon = 3` steps: sample one return at random (with replacement) from history → `path = clip(path × (1 + sampled_return), 0, 100)`
-3. Record the terminal score
-
-#### Step 3 — Percentile fan chart
-
-```
-p05, p25, p50, p75, p95 = percentiles(5000 terminal scores, [5, 25, 50, 75, 95])
-```
-
-#### Step 4 — Relative VaR %
-
-```
-VaR% = (p05 − current_score) / max(current_score, 1) × 100
-```
-
-A negative VaR% means the model expects the patient to decline.
-
-#### Step 5 — Conditional VaR (Expected Shortfall)
-
-```
-CVaR% = VaR% × 1.3    if VaR% < 0   (conservative bound; 1.3× is a proxy for proper ES)
-CVaR% = 0             if VaR% ≥ 0   (no tail risk)
-```
-
-#### Step 6 — Risk tier
-
-| VaR% | Tier | Clinical label |
-|---|---|---|
-| > +5% | 🟢 GREEN | Health Stable |
-| 0 to +5% | 🟡 YELLOW | Low Risk |
-| −10% to 0% | 🟠 ORANGE | Moderate Risk — review within 24–48h |
-| < −10% | 🔴 RED | High Risk — prioritize review |
-
-**Output:** `HealthVaRResult` — `p05–p95` fan points, `var_pct`, `cvar_pct`, `risk_tier`.
-
----
-
-### Metric 4 — NLP Signal (`src/nlp_signal.py`)
-
-**Purpose:** Extract a clinical signal from free-text Turkish clinical notes using zero-shot NLI classification and collapse it to a composite score per visit in **[−1.0, +1.0]**.
-
-#### Step 1 — Zero-shot NLI classification per text column
-
-Each non-empty text snippet (truncated to 512 tokens) is fed into the `MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli` pipeline with three candidate labels in Turkish:
-
-```
-labels     = ["kötüleşme", "iyileşme", "nötr"]
-template   = "Bu klinik metin {} ile ilgilidir."
-```
-
-The model uses textual entailment (NLI), not sentiment analysis, which means it reasons about the *meaning* of the text rather than emotional polarity. The top-ranked label and its confidence probability are returned.
-
-#### Step 2 — Score with confidence dampening
-
-```
-base_score     = {"kötüleşme": −1.0, "iyileşme": +1.0, "nötr": 0.0}[top_label]
-column_score   = base_score × top_confidence
-```
-
-Confidence dampening pulls uncertain predictions toward 0 (e.g. 34% confidence → only 34% of the full signal).
-
-#### Step 3 — Weighted composite across columns
-
-```
-total_weight   = Σ weight[col]  for available columns
-nlp_composite  = Σ (column_score[col] × weight[col] / total_weight)
-nlp_composite  = clip(nlp_composite, −1.0, +1.0)
-```
-
-Column weights:
-
-| Column | Weight | Rationale |
-|---|---|---|
-| ÖYKÜ | 0.35 | Most detailed narrative — patient history |
-| Muayene Notu | 0.30 | Physical exam findings |
-| Kontrol Notu | 0.20 | Follow-up / progress notes |
-| YAKINMA | 0.10 | Chief complaint (short, high signal density) |
-| Tedavi Notu | 0.05 | Treatment note (often formulaic) |
-
-Missing columns are excluded and remaining weights are re-normalised.
-
-**Output:** A DataFrame with `nlp_<col>` score columns and `nlp_composite ∈ [−1, +1]` per visit.
-
----
-
-### Metric 5 — Composite Risk Score (`src/fusion.py`)
-
-**Purpose:** Fuse the Health Index, NLP signal, and medication change velocity into a single credit-style score in **[0, 100]** with a rating label (AAA → B/CCC).
-
-#### Step 1 — NLP normalisation: [−1, +1] → [0, 100]
-
-The NLP score is stretched 2× so the typical clinical range [−0.5, +0.5] expands to fill most of [0, 100]:
-
-```
-stretched = nlp_composite × 2.0
-nlp_norm  = clip((stretched + 1.0) / 2.0 × 100, 0, 100)
-```
-
-#### Step 2 — Medication change velocity score: [0, 100]
-
-Based on prescription records from `recete.ods`. The score penalises high rates of new/different drugs (a proxy for unstable or escalating disease):
-
-**Single-day prescriptions** (all on one visit):
-```
-score = max(10, 100 − n_unique_drugs × 12)
-```
-
-**Multi-day prescriptions:**
-```
-changes_per_month = (n_unique_drugs / date_span_days) × 30
-score = max(10, 100 − changes_per_month × 9)
-```
-
-Higher velocity → lower score. Default when no data: `80.0`.
-
-#### Step 3 — Weighted fusion
-
-```
-composite = 0.55 × health_score
-          + 0.30 × nlp_norm
-          + 0.15 × med_change_score
-
-composite = clip(composite, 0, 100)
-```
-
-Weight evidence: 55% labs/vitals (structured data dominates clinical prediction per Rajkomar 2018, PMID 31304302); 30% NLP (multi-modal gains +1–5% AUROC per Garriga 2023, PMID 37913776); 15% medication (polypharmacy risk per PMID 28784299, conservative for confounding).
-
-#### Step 4 — Credit rating
-
-| composite ≥ | Rating | Label |
-|---|---|---|
-| 85 | **AAA** | Excellent — stable health |
-| 70 | **AA** | Good — minor abnormalities |
-| 55 | **A** | Moderate — monitoring recommended |
-| 40 | **BBB** | Below average — clinical review needed |
-| 25 | **BB** | Elevated risk — active intervention recommended |
-| 0 | **B/CCC** | High risk — urgent clinical attention |
-
-**Output:** `CompositeRiskScore` — composite_score, rating, and three component scores.
-
----
-
-### Metric 6 — Clinical Severity Index / CSI (`src/outcomes.py`)
-
-**Purpose:** A severity burden score in **[0, 100]** integrating six clinical dimensions (0 = minimal burden, 100 = maximum burden) oriented to predict healthcare utilisation.
-
-**Why rule-based?** Small cohort (n=9 patients) is insufficient for ML training. Instead, we demonstrate a **feature engineering pipeline** that will work on larger cohorts, and validate signal quality using Spearman rank correlation.
-
-#### CSI Component Weights (Sum = 1.0)
-
-| Component | Weight | Rationale |
-|---|---|---|
-| **Health Score Trend** | **25%** | Trajectory matters most — declining patients need intervention |
-| **Lab Volatility** | **20%** | Instability predicts adverse events (high std = erratic physiology) |
-| **Critical Regime Fraction** | **20%** | Time spent in Critical state = direct severity measure |
-| **NLP Signal** | **15%** | Clinical language detects deterioration before labs change |
-| **Prescription Intensity** | **10%** | High Rx velocity = active disease escalation |
-| **Comorbidity Burden** | **10%** | Chronic conditions increase baseline risk |
-
-#### Step 1 — Six component normalisation (each → [0, 100])
-
-| Component | Raw feature | Normalization formula | Interpretation |
-|---|---|---|---|
-| **Health trend** | OLS slope (pts/observation) | `clip((−slope + 5) / 10 × 100, 0, 100)` | −5 pts/visit → 100 (worst), +5 pts/visit → 0 (best) |
-| **Lab volatility** | Std dev of health scores | `clip(std / 20 × 100, 0, 100)` | std = 20 → 100 (very unstable) |
-| **Critical fraction** | Fraction in Critical state | `clip(fraction × 100, 0, 100)` | 100% Critical → 100 |
-| **NLP signal** | Mean NLP composite [−1, +1] | `clip((−mean_nlp + 1) / 2 × 100, 0, 100)` | −1 (deterioration) → 100 |
-| **Prescription intensity** | Rx per 30 days | `clip(rx_velocity / 10 × 100, 0, 100)` | 10+ Rx/month → 100 |
-| **Comorbidity burden** | Count of comorbidities | `clip(n_comorbidities / 4 × 100, 0, 100)` | 4+ conditions → 100 |
-
-**Formulas:**
-
-Health trend slope uses ordinary least-squares (OLS):
-```
-slope = Σ (x_i − x̄)(y_i − ȳ) / Σ (x_i − x̄)²    where x = observation index, y = health_score
-```
-
-Prescription velocity (medications per month):
-```
-rx_velocity = (n_dated_prescriptions / date_span_days) × 30
-```
-
-Comorbidities are counted from 6 binary flag columns in `anadata.ods`:
-- Hipertansiyon Hastada (Hypertension)
-- Kalp Damar Hastada (Cardiovascular disease)
-- Diyabet Hastada (Diabetes)
-- Kan Hastalıkları Hastada (Blood disorders)
-- Kronik Hastalıklar Diğer (Other chronic diseases)
-- Ameliyat Geçmişi (Surgical history)
-
-#### Step 2 — Weighted sum
-
-```python
-CSI = 0.25 × health_trend_component
-    + 0.20 × lab_volatility_component
-    + 0.20 × critical_fraction_component
-    + 0.15 × nlp_signal_component
-    + 0.10 × prescription_intensity_component
-    + 0.10 × comorbidity_burden_component
-
-CSI = clip(CSI, 0, 100)
-```
-
-**Feature contributions (explainability):**
-Each component's contribution is tracked separately for interpretability:
-```python
-feature_contributions = {
-    "health_trend": health_trend_component × 0.25,      # e.g., 19.5 pts
-    "lab_volatility": lab_volatility_component × 0.20,  # e.g., 4.2 pts
-    "critical_fraction": critical_fraction_component × 0.20,  # e.g., 12.0 pts
-    "nlp_signal": nlp_signal_component × 0.15,          # e.g., 10.9 pts
-    "prescription_intensity": prescription_intensity × 0.10,  # e.g., 4.0 pts
-    "comorbidity_burden": comorbidity_component × 0.10, # e.g., 7.5 pts
-}
-```
-
-This allows clinicians to see **which factor is driving the risk** (e.g., "Health trend is the dominant contributor — patient is declining fast").
-
-#### Step 3 — Tier assignment
-
-| CSI ≥ | Tier | Label | Clinical Action |
-|---|---|---|---|
-| 75 | **CRITICAL** | Immediate clinical attention required | Prioritize now — review within hours |
-| 50 | **HIGH** | Active intervention recommended | Review within 24-48h |
-| 25 | **MODERATE** | Enhanced monitoring needed | Review within 1 week |
-| 0 | **LOW** | Routine monitoring | Standard care — review monthly |
-
-**Output:** `csi_score` (0-100), `csi_tier` (LOW/MODERATE/HIGH/CRITICAL), `csi_label`, and `feature_contributions` dict.
-
-#### Example Calculation
-
-```
-Patient #42:
-  - Health trend slope: -2.8 pts/visit (declining)
-  - Lab volatility (std): 4.2
-  - Critical fraction: 60% (3 of 5 visits)
-  - Mean NLP: -0.45 (negative language)
-  - Rx velocity: 4.0 per month
-  - Comorbidities: 3 (HTN, DM, CVD)
-
-Components:
-  - Health trend: (-(-2.8) + 5) / 10 × 100 = 78.0 → 78.0 × 0.25 = 19.5 pts
-  - Lab volatility: 4.2 / 20 × 100 = 21.0 → 21.0 × 0.20 = 4.2 pts
-  - Critical fraction: 0.60 × 100 = 60.0 → 60.0 × 0.20 = 12.0 pts
-  - NLP signal: (-(-0.45) + 1) / 2 × 100 = 72.5 → 72.5 × 0.15 = 10.9 pts
-  - Rx intensity: 4.0 / 10 × 100 = 40.0 → 40.0 × 0.10 = 4.0 pts
-  - Comorbidity: 3 / 4 × 100 = 75.0 → 75.0 × 0.10 = 7.5 pts
-
-CSI = 19.5 + 4.2 + 12.0 + 10.9 + 4.0 + 7.5 = 58.1 → HIGH tier
-Dominant factor: Health trend (19.5 pts) — patient is declining
-```
-
-#### Validation
-
-CSI is validated against **total healthcare utilization** (visit count) using Spearman rank correlation:
-- **Hypothesis:** Higher CSI → more visits
-- **Expected:** ρ > 0.4 (moderate positive correlation)
-- **Interpretation:** If CSI correlates with utilization, it captures real clinical burden
-
----
-
-### Advanced Analytics (`src/advanced_analytics.py`)
-
-All 12 analytics operate on the health score `SeriesPoint` list. Arithmetic returns are computed first:
-
-```
-returns[i] = (score[i] − score[i−1]) / max(score[i−1], 1.0)
-```
-
----
-
-#### AA-1 — Lab Instability Forecaster (EWMA/GARCH Volatility)
-
-Predicts whether lab variability will increase or decrease using an Exponentially Weighted Moving Average variance update:
-
-```
-σ²[i] = 0.15 × r[i]² + 0.85 × σ²[i−1]    (α = 0.15, λ = 0.85)
-
-forecast_vol[i] = sqrt(σ²[i]) × 100   (%)
-realized_vol[i] = std(r[max(0, i−5) : i+1]) × 100
-```
-
-Regimes: `low` if `forecast_vol < 5%`, `high` if `> 20%`, else `normal`.
-
----
-
-#### AA-2 — Clinical Stress Testing
-
-Applies quantile-based shocks from the return distribution:
-
-```
-worst_day              = min(returns) × 100
-99th_pct_adverse       = percentile(returns, 1) × 100
-2x_historical_worst    = min(returns) × 200
-expected_shortfall     = mean(returns[returns < percentile(returns, 5)]) × 100
-```
-
----
-
-#### AA-3 — Temporal Clinical Validation (Walk-Forward)
-
-Expanding-window walk-forward split over the health return series. For each split s:
-
-```
-train = returns[0 : chunk × (s+1)]
-test  = returns[chunk × (s+1) : chunk × (s+2)]
-train_sharpe = mean(train) / std(train) × sqrt(252)
-test_sharpe  = mean(test)  / std(test)  × sqrt(252)
-```
-
-`is_robust = True` if `test_sharpe > 0` across all splits. Uses 3 splits by default.
-
----
-
-#### AA-4 — Patient Suffering Index (Ulcer Index + CVaR + Profit Factor)
-
-**Ulcer Index** — captures both depth *and* duration of health declines (unlike max drawdown which only captures depth):
-
-```
-peak[i]     = max(scores[0 : i+1])              (running peak)
-dd_pct[i]   = (scores[i] − peak[i]) / peak[i] × 100
-ulcer_index = sqrt(mean(dd_pct²))
-```
-
-**CVaR (5%):**
-```
-CVaR = mean(sorted_returns[ : max(int(n × 0.05), 1)])
-```
-
-**Profit Factor:**
-```
-profit_factor = sum(positive returns) / |sum(negative returns)|
-```
-
-**Expectancy Ratio:**
-```
-expectancy = mean(returns) / std(returns)
-```
-
----
-
-#### AA-5 — Organ System Risk Decomposition
-
-Decomposes total health risk into per-organ-system contributions using weighted variance:
-
-```
-contrib[k]       = weight[k] × var(returns_k)
-contribution_pct[k] = contrib[k] / Σ contrib × 100
-```
-
-Shows which organ system is driving the most volatility in the overall health score.
-
----
-
-#### AA-6 — Lab Cross-Correlation Matrix
-
-Pairwise Pearson correlation between any two lab test time-series (aligned to minimum shared length, minimum 3 points):
-
-```
-corr(lab1, lab2) = corrcoef(lab1_values, lab2_values)[0, 1]
-```
-
----
-
-#### AA-7 — Optimal Fusion Weights (Mean-Variance Optimisation)
-
-Random-search mean-variance optimisation over 2,000 Dirichlet-sampled weight vectors. For each weight vector `w`:
-
-```
-combo  = Σ w[k] × returns_k
-sharpe = mean(combo) / std(combo)
-```
-
-`best_weights = argmax(sharpe)`. Dirichlet sampling guarantees weights sum to 1.
-
----
-
-#### AA-8 — Optimal Intervention Sizing (Kelly Criterion)
-
-Adapted half-Kelly from trading to clinical intervention intensity:
-
-```
-win_rate  = count(returns > 0) / len(returns)
-wl_ratio  = mean(positive_returns) / |mean(negative_returns)|
-kelly     = max(0, win_rate − (1 − win_rate) / wl_ratio) × 0.5   (half-Kelly)
-```
-
-| kelly | Recommendation |
-|---|---|
-| > 0.6 | Maintain current treatment |
-| 0.3 – 0.6 | Standard care, periodic review |
-| 0.1 – 0.3 | Consider treatment adjustment |
-| < 0.1 | Escalate care — reassess treatment plan |
-
----
-
-#### AA-9 — Clinical Signal Significance Testing
-
-One-sample t-test combined with bootstrap permutation:
-
-```
-t_stat  = mean(returns) / (std(returns, ddof=1) / sqrt(n))
-p_val   = erfc(|t_stat| / sqrt(2))       # Gaussian approximation
-
-bootstrap (1000 resamples):
-  boot_p = count(bootstrap_mean ≤ 0) / 1000
-```
-
-`is_significant = True` if `p_val < 0.05`.
-
----
-
-#### AA-10 — Stability-Weighted Health Score (Inverse Volatility)
-
-Weights each lab test time-series inversely by its own volatility so that noisier labs exert less influence:
-
-```
-inv_vol[k] = 1 / std(lab_values_k)
-weight[k]  = inv_vol[k] / Σ inv_vol
-```
-
----
-
-#### AA-11 — Rolling Health Trajectory Dashboard
-
-Sliding-window (default 5 observations) metrics computed at each time step `i`:
-
-```
-window slice: w = scores[i − window : i + 1]
-rets          = diff(w) / max(w[:-1], 0.01)
-
-rolling_return    = (w[−1] / w[0]) − 1
-rolling_vol       = std(rets)
-rolling_sharpe    = mean(rets) / std(rets)
-rolling_drawdown  = min((w − running_peak(w)) / running_peak(w))
-```
-
----
-
-#### AA-12 — Maximum Clinical Decline (Drawdown Analysis)
-
-Full peak-to-trough drawdown analysis identical to financial max drawdown:
-
-```
-peak[i]          = max(scores[0 : i+1])            (running peak)
-dd[i]            = (scores[i] − peak[i]) / peak[i]   (always ≤ 0)
-max_drawdown_pct = min(dd) × 100  (%)
-```
-
-Recovery is detected as the first index after the trough where `scores[i] ≥ peak[at_trough]`. Recovery time is measured in calendar days.
-
-```
-current_drawdown_pct = (scores[−1] − peak[−1]) / peak[−1] × 100
+## Architecture Overview
+
+```
+                      +-------------------+
+                      |     Raw Data      |
+                      | Lab | Visits | Rx |
+                      +--------+----------+
+                               |
+                    +----------v-----------+
+                    |   src/data_loader.py  |
+                    | Load, clean, index    |
+                    +----------+-----------+
+                               |
+            +------------------+------------------+
+            |                  |                  |
+   +--------v--------+ +------v------+ +---------v---------+
+   | health_index.py | | nlp_llm.py  | | patient_regime.py |
+   | Z-score scoring | | LLM scoring | | State machine     |
+   | 0-100 per organ | | [-1, +1]    | | 4-state regime    |
+   +--------+--------+ +------+------+ +---------+---------+
+            |                  |                  |
+            +------------------+------------------+
+                               |
+            +------------------+------------------+
+            |                  |                  |
+   +--------v--------+ +------v------+ +---------v---------+
+   |   fusion.py     | |   eci.py    | | sut_pricing.py    |
+   | Composite Score  | | Cost Index  | | TRY cost estimate |
+   | AAA-B/CCC rating | | AAA-B/CCC  | | SUT gazette data  |
+   +--------+--------+ +------+------+ +---------+---------+
+            |                  |                  |
+   +--------v--------+ +------v------+            |
+   |  health_var.py  | | outcomes.py |            |
+   | Monte Carlo VaR | | Profiles +  |            |
+   | 5th pctile risk | | Narratives  |            |
+   +--------+--------+ +------+------+            |
+            |                  |                  |
+            +------------------+------------------+
+                               |
+                    +----------v-----------+
+                    |       api.py         |
+                    |  FastAPI (7 endpoints)|
+                    +----------+-----------+
+                               |
+                    +----------v-----------+
+                    |  Next.js Frontend    |
+                    |  4 tabs + chatbot    |
+                    +----------------------+
 ```
 
 ---
 
 ## Data Pipeline
 
-| File | Content |
-|---|---|
-| `labdata.ods` | Lab results time-series per patient |
-| `anadata.ods` | Patient visits with Turkish clinical text (69 columns) |
-| `recete.ods` | Prescription records |
+### Stage 1: Data Loading (`src/data_loader.py`)
+
+Three data sources are loaded from `.cache/` Parquet files:
+
+| Source | Contents | Key Columns |
+|--------|----------|-------------|
+| **Lab Results** | Test values with reference ranges | `patient_id, test_name, value, ref_min, ref_max, date` |
+| **Visit Records** (anadata) | Clinical visits, vitals, notes, comorbidities | `patient_id, visit_date, age, sex, systolic_bp, diastolic_bp, los_days, TANIKODU, comorbidity flags, clinical text columns` |
+| **Prescriptions** (recete) | Medication records | `patient_id, date, drug_name, dose, duration_days` |
+
+**Data quality rules applied during loading:**
+
+| Column | Validation | Action |
+|--------|-----------|--------|
+| `systolic_bp` | < 40 or > 300 mmHg | Set to NaN |
+| `diastolic_bp` | < 20 or > 200 mmHg | Set to NaN |
+| `age` | < 0 or > 120 years | Set to NaN |
+| `pulse` | 96.7% missing | Excluded from scoring |
+| `SpO2` | 99.7% missing | Excluded from scoring |
+| `date` (all sources) | Before 2000-01-01 | Row dropped (Excel serial leak) |
+
+**Comorbidity flag columns** (6 binary indicators):
+
+| Column | Condition |
+|--------|-----------|
+| `Hipertansiyon Hastada` | Hypertension |
+| `Kalp Damar Hastada` | Cardiovascular disease |
+| `Diyabet Hastada` | Diabetes |
+| `Kan Hastaliklari Hastada` | Blood disorders |
+| `Kronik Hastaliklar Diger` | Other chronic diseases |
+| `Ameliyat Gecmisi` | Surgical history |
+
+A flag is "positive" if the value is a non-empty string (length >= 1) or a number > 0.
+
+### Stage 2: Health Index Computation
+
+See [Health Index](#1-health-index) below.
+
+### Stage 3: Parallel Analytics
+
+All downstream modules run on the health index output:
+- **Patient regime classification** -- state machine for clinical trajectory
+- **Health VaR** -- Monte Carlo risk quantification
+- **NLP scoring** -- pre-cached LLM sentiment analysis
+- **Composite risk scoring** -- fusion of health index + NLP
+- **ECI** -- Expected Cost Intensity (percentile-based)
+- **SUT pricing** -- Turkish healthcare cost estimation
+- **Validation** -- statistical tests against SOFA and APACHE II benchmarks
+
+### Stage 4: API Serving
+
+The pipeline runs **once at startup** and is cached in memory. All API endpoints read from the cache with zero recomputation per request. JSON sanitization handles NaN, Inf, and numpy types transparently.
 
 ---
 
-## Validation Experiments
+## Core Metrics
 
-Five retrospective experiments (no ground-truth labels required):
+### 1. Health Index
 
-| # | Hypothesis | Test | Clinical Meaning |
-|---|---|---|---|
-| 1 | Critical regime → higher Rx velocity | Spearman ρ | Regime is clinically meaningful |
-| 2 | RED VaR → more visits | Spearman ρ | VaR has predictive power |
-| 3 | Negative NLP → more visits | Spearman ρ | Turkish NLP detects clinical signal |
-| 4 | High volatility → more Critical episodes | Spearman ρ | Regime dimensions are not redundant |
-| 5 | Higher CSI → more visits | Spearman ρ | CSI calibrated to utilization |
+**Module:** `src/health_index.py` (937 lines)
+**Output:** Score in **[0, 100]** where 100 = perfectly healthy, 0 = maximally abnormal
 
-> **Caveat:** Small cohort — all statistical results are exploratory and directional. The framework is designed for scale.
+The Health Index quantifies a patient's physiological state by measuring how far lab test results deviate from their reference ranges, aggregated across 8 organ systems.
+
+#### 1.1 Organ Systems
+
+Each lab test is classified into one of 8 organ systems by keyword matching on the test name:
+
+| Organ System | Weight | Test Keywords |
+|-------------|--------|---------------|
+| Inflammatory | 0.125 | CRP, Lokosit, Notrofil, Lenfosit, Bazofil, Eozinofil, Monosit, Prokalsitonin |
+| Renal | 0.125 | Kreatinin, Ure, GFR |
+| Hepatic | 0.125 | Bilirubin, ALT, AST, ALP, GGT |
+| Hematological | 0.125 | Hemoglobin, Hematokrit, Eritrosit, Trombosit, MCV, MCH, RDW |
+| Metabolic | 0.125 | Glukoz, HbA1c, Kolesterol, Trigliserid, LDL, HDL, Sodyum, Potasyum, Kalsiyum, Albumin, Protein |
+| Endocrine | 0.125 | TSH, T3, T4 |
+| Coagulation | 0.125 | INR, PT, aPTT |
+| Other | 0.125 | Any test not matching the above |
+
+All 8 systems have **equal weight** (0.125), consistent with SOFA/NEWS2/APACHE II multi-organ scoring philosophy.
+
+#### 1.2 Reference Range Resolution
+
+Three-tier fallback for reference ranges:
+
+1. **Hospital-supplied** `REFMIN` / `REFMAX` from the lab row (highest priority)
+2. **NexGene AI intervals** -- source: NexGene AI Medical Reasoning API (asa-mini model, v0.4.132, queried 2026-03-07). Used when hospital data is NaN or `ref_max <= ref_min`.
+3. **No range available** -- test receives z = 0.0 (invisible to scoring)
+
+**NexGene AI reference ranges used as fallback:**
+
+| Test Keyword | Range | Unit |
+|-------------|-------|------|
+| Albumin | 35.0 - 50.0 | g/L |
+| Protein | 60.0 - 80.0 | g/L |
+| Ure | 1.8 - 7.1 | mmol/L |
+| Kreatinin | 41.0 - 111.0 | umol/L |
+| Bilirubin | 0.0 - 21.0 | umol/L |
+| Glukoz | 3.9 - 6.1 | mmol/L |
+| Kolesterol | 3.5 - 5.2 | mmol/L |
+| ALT | 19.0 - 25.0 | U/L |
+| AST | 10.0 - 44.0 | U/L |
+| ALP | 55.0 - 150.0 | U/L |
+| GGT | 5.0 - 40.0 | U/L |
+| Sodyum | 135.0 - 145.0 | mmol/L |
+| Potasyum | 3.3 - 5.1 | mmol/L |
+| Kalsiyum | 2.2 - 2.6 | mmol/L |
+
+**Vital sign reference ranges** (NexGene AI):
+
+| Vital | Range | Unit |
+|-------|-------|------|
+| Systolic BP | 90.0 - 119.0 | mmHg |
+| Diastolic BP | 75.0 - 84.0 | mmHg |
+
+#### 1.3 Per-Test Z-Score
+
+The z-score measures **distance outside the reference range** (not distance from midpoint):
+
+```
+ref_std = (ref_max - ref_min) / 4.0
+```
+
+The reference range is assumed to span +/-2 standard deviations (95% CI), so the total width equals 4 sigma.
+
+```
+        { (ref_min - value) / ref_std    if value < ref_min   (below range)
+z_i =   { (value - ref_max) / ref_std    if value > ref_max   (above range)
+        { 0.0                             if ref_min <= value <= ref_max
+```
+
+Key properties:
+- **One-sided**: z = 0 for all in-range values (a CRP of 0 is healthy, not penalized)
+- **Always non-negative**: measures absolute distance from nearest boundary
+- **Division-by-zero guard**: `ref_std = max((ref_max - ref_min) / 4.0, 1e-9)`
+
+#### 1.4 Organ System Aggregation
+
+Within each organ system on a given date:
+
+```
+system_z[organ] = mean(z_i for all tests i in that organ on that date)
+```
+
+#### 1.5 Weighted Aggregate Z-Score
+
+Across organ systems present on that date:
+
+```
+                 sum(system_z[organ] * w[organ])
+mean_z = ----------------------------------------
+                 sum(w[organ])
+```
+
+where `w[organ] = 0.125` for all systems. Only organ systems with at least one test present contribute to both numerator and denominator.
+
+#### 1.6 Health Score Conversion (Exponential Decay)
+
+```
+lab_score = clip(100 * exp(-0.25 * mean_z), 0, 100)
+```
+
+| mean_z | lab_score | Interpretation |
+|--------|-----------|----------------|
+| 0.0 | 100.0 | All tests within reference range |
+| 2.0 | 60.7 | Mild abnormalities |
+| 4.0 | 36.8 | Moderate abnormalities |
+| 6.0 | 22.3 | Severe abnormalities |
+| 8.0+ | < 13.5 | Critical |
+
+The decay constant 0.25 controls the steepness of the mapping.
+
+#### 1.7 Vital Score
+
+Identical formula applied to vitals (only systolic/diastolic BP active):
+
+```
+vital_score = clip(100 * exp(-0.25 * vital_mean_z), 0, 100)
+```
+
+Temporal matching: vitals must be on or before the scoring date, within a **30-day lookback** window. Uses `merge_asof` with `direction="backward"` in bulk mode.
+
+#### 1.8 Composite Health Score
+
+```
+                { 0.60 * lab_score + 0.40 * vital_score    if both available
+health_score =  { lab_score                                 if vitals missing
+                { vital_score                               if labs missing
+```
+
+Default weights: `lab_weight = 0.60`, `vital_weight = 0.40`.
+
+#### 1.9 Data Completeness
+
+```
+                { 0.0    if neither labs nor vitals
+completeness =  { 0.5    if labs only or vitals only
+                { 1.0    if both labs and vitals present
+```
+
+#### 1.10 Dominant Organ System
+
+The organ system with the **highest mean z-score** on a given date (i.e., the most abnormal system).
 
 ---
 
-## Documentation Guide — For Different Audiences
+### 2. Patient Regime Classification
 
-### 👨‍⚕️ **For Clinicians / Medical Reviewers**
+**Module:** `src/patient_regime.py` (360 lines)
+**Output:** One of 4 clinical states per observation date
 
-Start here — no coding required:
+Inspired by Hidden Markov Models in quantitative finance (regime detection for bull/bear markets), the patient regime classifier assigns a clinical state at each observation point using a **2x2 grid** of trend direction and volatility level.
 
-| Document | What It Explains | Why Read It |
-|----------|------------------|-------------|
-| **`docs/CALCULATION_LOGIC.md`** | **Plain language guide to all formulas** | Understand exactly how scores are calculated without reading code |
-| **`docs/MISSING_DATA_EVALUATION.md`** | **Data quality audit** — missingness rates, coverage gaps, recommendations | Understand data limitations and how the system handles missing vitals/labs |
-| `docs/PARAMETER_EVIDENCE_REPORT.md` | Clinical evidence for all parameters (PMIDs included) | See which guidelines and studies justify each number |
-| `docs/FUSION_WEIGHTS_EVIDENCE.md` | Why 55% labs, 30% NLP, 15% meds | Evidence from Rajkomar 2018, Garriga 2023, polypharmacy meta-analyses |
+#### 2.1 State Definitions
 
-**Key questions answered:**
-- Why is CRP=0 not penalized but Hemoglobin=8 is? → **One-sided z-score** (see CALCULATION_LOGIC.md Step 1)
-- What happens if vitals are missing? → **Adaptive weighting: pure lab score replaces inflated composite** (see Step 5 above)
-- Which organ systems matter most? → **All 8 organ systems weighted equally at 12.5%** (SOFA/APACHE uniform philosophy)
-- Why these specific weights? → **SOFA/APACHE comparison + outcome studies** (see PARAMETER_EVIDENCE_REPORT.md)
-- How can I tell if a patient's score is based on full data? → **`data_completeness` field** (1.0 = labs + vitals, 0.5 = labs only)
+| State | Trend | Volatility | Color | Clinical Meaning |
+|-------|-------|-----------|-------|-----------------|
+| **Stable** | Positive (score >= MA) | Low | Green (#2ECC71) | Patient on track, no intervention needed |
+| **Recovering** | Positive (score >= MA) | High | Amber (#F39C12) | Improving but volatile -- continue monitoring |
+| **Deteriorating** | Negative (score < MA) | Low | Orange (#E67E22) | Steady decline -- review care plan |
+| **Critical** | Negative (score < MA) | High | Red (#E74C3C) | Rapid decline with instability -- urgent review |
 
----
+#### 2.2 Configuration Parameters
 
-## Key Technical Decisions
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `ma_window` | 3 | Moving average window (observations) |
+| `vol_window` | 4 | Rolling standard deviation window |
+| `vol_lookback` | 20 | History window for volatility percentile ranking |
+| `vol_high_percentile` | 60.0 | Percentile threshold for "high" volatility |
+| `min_observations` | 2 | Minimum data points before classification |
 
-**Why percentile-rank volatility instead of absolute std?**  
-Patient baselines differ. Percentile rank is self-normalizing within each patient's own history.
+#### 2.3 Rolling Calculations
 
-**Why credit ratings (AAA–B)?**  
-Clinicians already use risk-tier language. We quantify existing intuition rather than introducing new vocabulary.
+**Moving Average:**
+```
+MA_t = mean(score_{t-w+1}, ..., score_t)     where w = ma_window = 3
+```
 
-**Why Monte Carlo on health score returns?**
-Assumes today's volatility regime is representative of near-term future — same assumption used in finance, same caveat applies post-surgery.
+**Rolling Volatility:**
+```
+vol_t = std(score_{t-w+1}, ..., score_t), ddof=1     where w = vol_window = 4
+```
+Requires minimum 3 data points (`min_periods=3`).
 
----
+**Volatility Percentile Rank:**
+```
+vol_pct_t = (count of historical vol values <= vol_t) / (count of historical vol values) * 100
+```
+Computed within the patient's own history (last `vol_lookback = 20` observations). If fewer than 3 historical values exist, defaults to 50.0 (neutral).
 
-### 👨‍💻 **For Developers / Modelers**
+#### 2.4 Classification Logic
 
-| Document | What It Explains |
-|----------|------------------|
-| `src/health_index.py` | Lab/vital scoring (z-score, equal organ weights, exponential decay, adaptive weighting) |
-| `src/patient_regime.py` | 4-state classification (trend × volatility grid) |
-| `src/health_var.py` | Monte Carlo VaR (5,000 iterations, bootstrap) |
-| `src/fusion.py` | Composite fusion (55/30/15, credit rating tiers) |
-| `src/outcomes.py` | CSI calculation (6 components, OLS trend) |
-| `src/nlp_signal.py` | Zero-shot NLI (Turkish text, confidence dampening) |
+```
+trend_positive = (score_t >= MA_t)
+vol_high = (vol_pct_t >= 60.0)
 
----
+if trend_positive and not vol_high:     -> STABLE
+if trend_positive and vol_high:         -> RECOVERING
+if not trend_positive and not vol_high: -> DETERIORATING
+if not trend_positive and vol_high:     -> CRITICAL
+```
 
-### 📊 **For Data Scientists / Researchers**
+#### 2.5 Transition Events
 
-| Document | What It Explains |
-|----------|------------------|
-| `docs/HEALTH_INDEX_WEIGHT_JUSTIFICATION.md` | Organ weight derivation from SOFA/APACHE II |
-| `docs/MISSING_DATA_EVALUATION.md` | Full missingness audit — vital/lab/NLP coverage, score inflation analysis |
-| `docs/PARAMETER_EVIDENCE_REPORT.md` | Full parameter table with PMIDs (vital ranges, decay constant λ=0.25) |
-| `src/validation.py` | 5 retrospective experiments (Spearman ρ, no labels needed) |
-| `src/advanced_analytics.py` | 12 finance→healthcare transfers (GARCH, Kelly, Ulcer Index) |
-| `src/advanced_analytics.py` | Mean-variance optimization for weight calibration |
-
----
-
-## Explicit Limitations
-
-1. **Small cohort** — all statistical results are exploratory
-2. **Irregular lab spacing** — regime uses observation-indexed time, not calendar time
-3. **No clinical ground truth** — Critical state NOT validated against APACHE/SOFA
-4. **Threshold calibration** — regime percentiles tuned heuristically, not from clinical data
-5. **NLP coverage** — only 0.13% of patients (100/77,204) have NLP scores; the 30% NLP weight is redistributed for 99.87% of patients
-6. **Vital signs sparsity** — 89.5% of patients have zero vitals; only systolic/diastolic BP are scored (pulse 96.7% missing, SpO2 99.7% missing). Missingness-aware weighting prevents score inflation but the model is effectively lab-only for most patients.
-7. **Lab reference range gaps** — 12% of lab rows (842K) lack reference ranges from any source and receive z=0 (invisible to scoring)
-8. **Data completeness transparency** — the `data_completeness` field (0.0–1.0) is surfaced in the API and UI so clinicians can assess signal quality per patient
+State transitions are detected by sequential comparison of consecutive states. Each transition records `{date, from_state, to_state}`.
 
 ---
 
-*ILAY — "From Wall Street to the Bedside"*  
-*ACUHIT Hackathon 2026 | Acıbadem Mehmet Ali Aydınlar University*
+### 3. Health Value-at-Risk (VaR)
+
+**Module:** `src/health_var.py` (338 lines)
+**Output:** "With 95% confidence, this patient's health score will NOT fall below X in the next N lab-draw cycles."
+
+Adapted from financial Value-at-Risk (VaR), the Health VaR uses Monte Carlo bootstrap simulation to forecast the probability distribution of a patient's future health score.
+
+#### 3.1 Algorithm
+
+**Step 1 -- Compute arithmetic returns:**
+```
+r_i = (S_i - S_{i-1}) / max(S_{i-1}, 1.0)     for i = 1, ..., n
+```
+Arithmetic returns are used instead of log-returns because log-returns explode when health scores approach zero.
+
+**Step 2 -- Bayesian shrinkage:**
+```
+w_data = n_obs / (n_obs + 3)
+r'_i = r_i * w_data
+r'_i = clip(r'_i, -0.5, +0.5)
+```
+The prior is a zero-return (stable health assumption). With 1 observation, only 25% of the data signal is retained; with 10 observations, ~77%.
+
+**Step 3 -- Monte Carlo simulation:**
+```
+For each path j = 1, ..., N_iterations:
+    Draw r^j_1, ..., r^j_H with replacement from {r'_i}
+    Terminal^j = current * product(1 + r^j_k, k=1..H)
+    Terminal^j = clip(Terminal^j, 0, 100)
+```
+
+**Step 4 -- Percentile extraction:**
+```
+p05 = percentile(terminals, 5)      <-- This IS the Health VaR
+p25 = percentile(terminals, 25)
+p50 = percentile(terminals, 50)     <-- Median forecast
+p75 = percentile(terminals, 75)
+p95 = percentile(terminals, 95)
+```
+
+**Step 5 -- Relative VaR:**
+```
+var_pct = (p05 - current) / max(current, 1) * 100
+```
+
+#### 3.2 Default Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `horizon_draws` | 3 | Lab-draw cycles to forecast |
+| `iterations` | 5,000 (single) / 3,000 (batch) | Monte Carlo paths |
+| `seed` | 42 | Random seed for reproducibility |
+
+#### 3.3 CVaR (Expected Shortfall) Approximation
+
+```
+CVaR_pct = var_pct * 1.3    if var_pct < 0
+CVaR_pct = 0.0              otherwise
+```
+
+The 1.3x multiplier is a conservative proxy. True CVaR would be `E[Terminal | Terminal < p05]`.
+
+#### 3.4 Risk Tier Thresholds
+
+| VaR % Range | Tier | Label |
+|------------|------|-------|
+| > +5.0% | GREEN | Health Stable -- minimal risk of decline |
+| 0.0% to +5.0% | YELLOW | Low Risk -- slight downside possible |
+| -10.0% to 0.0% | ORANGE | Moderate Risk -- review within 24-48h |
+| <= -10.0% | RED | High Risk -- prioritize clinical review |
+
+#### 3.5 Edge Cases
+
+| Condition | Behavior |
+|-----------|----------|
+| < 2 data points | Returns `None` (VaR not computed) |
+| Single data point | All percentiles = that score (flat forecast) |
+| Zero data points | All percentiles = 50.0 (neutral midpoint) |
+
+---
+
+### 4. NLP Clinical Sentiment
+
+**Module:** `src/nlp_llm.py` (459 lines)
+**Output:** Score in **[-1.0, +1.0]** per clinical visit
+
+The NLP module uses a large language model to score the clinical sentiment of Turkish medical text from 5 clinical note columns.
+
+#### 4.1 Scoring Scale
+
+| Score | Meaning |
+|-------|---------|
+| -1.0 | Strong deterioration (critical symptoms, organ failure, emergency) |
+| -0.5 | Moderate deterioration (new symptoms, concerning findings) |
+| -0.2 | Mild concern (minor symptoms, suboptimal) |
+| 0.0 | Neutral/stable (routine follow-up, no change) |
+| +0.2 | Mild improvement (symptoms reducing) |
+| +0.5 | Moderate recovery (clear improvement) |
+| +1.0 | Strong recovery (resolved, discharge-ready) |
+
+#### 4.2 Text Columns and Weights
+
+| Column | Turkish Name | Weight |
+|--------|-------------|--------|
+| `OYKU` | Medical history | 0.20 |
+| `YAKINMA` | Chief complaint | 0.20 |
+| `Muayene Notu` | Physical exam notes | 0.20 |
+| `Kontrol Notu` | Follow-up notes | 0.20 |
+| `Tedavi Notu` | Treatment notes | 0.20 |
+
+All 5 columns carry equal weight. If some columns are missing, weights are renormalized across available columns.
+
+#### 4.3 Composite Calculation
+
+```
+nlp_composite = sum(score_col * w_col / total_weight for col in available_columns)
+nlp_composite = clip(nlp_composite, -1.0, +1.0)
+```
+
+Where `total_weight = sum(w_col for col in available_columns)`.
+
+#### 4.4 Model and API
+
+| Parameter | Value |
+|-----------|-------|
+| Model | `google/gemini-2.5-flash-lite` via OpenRouter |
+| Temperature | 0.1 |
+| Batch size | 20 texts per API call |
+| Concurrency | 10 simultaneous requests |
+| Text truncation | 400 characters per text |
+| Max retries | 3 (exponential backoff) |
+| Timeout | 60 seconds per request |
+
+#### 4.5 Turkish Clinical Keyword Mapping
+
+The LLM prompt includes explicit mappings for Turkish medical terminology:
+- **Deterioration signals:** "TA yuksek" (high BP), "ates" (fever), "dispne" (dyspnea), "ral" (crackles), "ronkus" (rhonchi), "odem" (edema)
+- **Stability/recovery signals:** "olagan" (normal), "temiz" (clear), "yok" (absent for symptoms)
+- **Neutral signals:** "kontrol" / "izlem" (follow-up), short medication lists alone, ICD codes alone
+
+---
+
+### 5. Composite Health Score
+
+**Module:** `src/fusion.py` (266 lines)
+**Output:** Score in **[0, 100]** with credit-style rating (AAA to B/CCC)
+
+The Composite Risk Score fuses the Health Index and NLP signal into a single patient risk metric, analogous to a credit rating in finance.
+
+#### 5.1 Formula
+
+```
+CompositeScore = 0.70 * HealthIndex + 0.30 * NLP_normalized
+CompositeScore = clip(CompositeScore, 0, 100)
+```
+
+When NLP is unavailable (score = 0.0):
+```
+CompositeScore = 1.0 * HealthIndex
+```
+
+#### 5.2 NLP Normalization ([-1, +1] to [0, 100])
+
+```
+NLP_normalized = clip(100 * nlp_score + 50, 0, 100)
+```
+
+The 2x stretch maps the typical clinical NLP range [-0.5, +0.5] to the full [0, 100] instead of being compressed into [25, 75].
+
+| NLP Input | NLP Normalized |
+|-----------|---------------|
+| -1.0 | 0 |
+| -0.5 | 0 |
+| 0.0 | 50 |
+| +0.5 | 100 |
+| +1.0 | 100 |
+
+#### 5.3 Weight Evidence
+
+| Weight | Source | Justification |
+|--------|--------|--------------|
+| 70% Health Index | Labs + vitals | NEWS AUROC 0.867; Rajkomar et al. 2018: structured data AUROC 0.93-0.94 for mortality |
+| 30% NLP | Clinical notes | Garriga et al. (JMIR 2024): multimodal fusion adds +1-5% AUROC; feature importance 20-35% from notes |
+
+#### 5.4 Medication Change Velocity (Informational, weight = 0)
+
+```
+                  { 80.0                                          if no Rx data
+med_score =       { clip(100 - n_drugs * 12, 10, 100)            if single day
+                  { clip(100 - (n_drugs / span_days * 30) * 9, 10, 100)  otherwise
+```
+
+Interpretation: 0 changes/month = 100 (stable), 10+ changes/month = 10 (unstable).
+
+
+### 6. Expected Cost Intensity (ECI)
+
+**Module:** `src/eci.py` (469 lines)
+**Output:** Score in **[0, 100]** where 100 = highest expected healthcare expenditure
+
+The ECI translates clinical risk into expected resource consumption, using percentile-ranking within the patient cohort. It answers: "How much healthcare utilization should we expect for this patient relative to peers?"
+
+#### 6.1 Master Formula
+
+```
+ECI = 0.25 * visit_intensity_pct + 0.25 * med_burden_pct + 0.25 * diagnostic_intensity_pct + 0.25 * trajectory_cost_pct
+ECI = clip(ECI, 0, 100)
+```
+
+All four components carry **equal weight** (0.25). No evidence exists to differentiate.
+
+#### 6.2 Component 1: Visit Intensity
+
+**Raw metric:** visits per month
+```
+visits_per_month = n_visits / max((date_max - date_min).days / 30.0, 0.1)
+```
+
+**Normalization:** Percentile-ranked across the entire cohort. A patient at the 90th percentile of visit frequency scores 90.
+
+#### 6.3 Component 2: Medication Burden
+
+Two sub-components, each percentile-ranked internally:
+
+**Sub-A:** Unique drug count = `patient_prescriptions.drug_name.nunique()`
+**Sub-B:** Drug change velocity = `unique_drugs / max(span_days / 30.0, 0.1)`
+
+```
+med_burden = 0.50 * percentile_rank(drug_count) + 0.50 * percentile_rank(change_velocity)
+```
+
+#### 6.4 Component 3: Diagnostic Intensity
+
+**Raw metric:** lab tests per month
+```
+labs_per_month = n_lab_rows / max(span_days / 30.0, 0.1)
+```
+
+**Normalization:** Percentile-ranked across the cohort.
+
+#### 6.5 Component 4: Clinical Trajectory Cost
+
+Two sub-components, each percentile-ranked:
+
+**Sub-A:** Health index slope (inverted)
+```
+slope = OLS regression slope of health_score vs. observation index
+trajectory_slope_signal = -slope     (declining health = HIGH cost signal)
+```
+
+**Sub-B:** NLP signal (inverted)
+```
+trajectory_nlp_signal = -nlp_composite    (negative NLP = HIGH cost signal)
+```
+
+```
+trajectory_cost = 0.50 * percentile_rank(-slope) + 0.50 * percentile_rank(-nlp)
+```
+
+#### 6.6 Percentile Ranking Function
+
+Converts raw values to [0, 100] percentiles using average rank for ties. NaN values are imputed with the **cohort median** before ranking.
+
+```
+percentile = rank / max(n - 1, 1) * 100
+```
+
+#### 6.7 ECI Rating Tiers
+
+| ECI Score | Rating | Label |
+|-----------|--------|-------|
+| >= 75 | B/CCC | Very high expenditure risk |
+| >= 60 | BB | High expenditure risk |
+| >= 45 | BBB | Elevated expenditure risk |
+| >= 30 | A | Moderate expenditure risk |
+| >= 15 | AA | Low expenditure risk |
+| >= 0 | AAA | Minimal expenditure risk |
+
+---
+
+### 7. SUT Cost Estimation
+
+**Module:** `src/sut_pricing.py` (670 lines) + `src/sut_catalog.py` (602 lines)
+**Output:** Cost range in **TRY** (Turkish Lira) per patient
+
+SUT (Saglik Uygulama Tebligi) is Turkey's Health Implementation Communique, establishing standardized reimbursement prices for every medical procedure. This module translates patient utilization data into concrete cost estimates.
+
+**Data source:** Official SUT gazette appendices (EK-2B: 5,074 fee-for-service procedures; EK-2C: 2,423 diagnosis-based packages) parsed from Excel into JSON catalogs.
+
+#### 7.1 Cost Categories
+
+Total cost is the sum of 4 categories:
+
+```
+total_min = lab_min + visit_min + rx_min + procedure_min
+total_max = lab_max + visit_max + rx_max + procedure_max
+total_mid = (total_min + total_max) / 2.0
+```
+
+#### 7.2 Lab Test Costs
+
+Each lab test name is matched against the SUT price catalog (40 ILAY test names mapped to SUT codes). Price range per test instance:
+- **min** = SUT gazette price (official reimbursement rate)
+- **max** = SUT price * 1.20 (private hospital markup allowance)
+
+```
+lab_cost = sum(price_range * count for each unique test name)
+```
+
+Unmapped tests use a default: `SUT_LAB_DEFAULT = (1.85, 2.22) TRY`
+
+**Sample real SUT gazette prices:**
+
+| Test | SUT Code | Price (TRY) |
+|------|----------|-------------|
+| CRP | 900890 | 2.53 |
+| ALT | 900200 | 1.85 |
+| TSH | 904030 | 7.59 |
+| HbA1c | 901450 | 7.59 |
+| Prokalsitonin | 903170 | 43.00 |
+| Hemogram (CBC) | 901620 | 7.59 |
+
+#### 7.3 Visit Costs
+
+Based on length of stay (LOS):
+
+| Visit Type | Condition | Min TRY | Max TRY | Per |
+|-----------|-----------|---------|---------|-----|
+| Outpatient | LOS = 0 or NaN | Based on SUT code 520010 | x 1.20 | per visit |
+| Inpatient | LOS >= 1 day | Based on SUT code 510010 (~50.59) | x 1.20 | per day |
+
+#### 7.4 Prescription Costs
+
+Flat per-prescription default (drug-level SUT mapping not yet integrated):
+```
+rx_cost = SUT_RX_DEFAULT * n_prescriptions = (20.0, 80.0) * n_rx
+```
+
+#### 7.5 Procedure Costs
+
+**Source A -- Comorbidity-linked:**
+Each active comorbidity flag adds its cost range once (from real EK-2C group price ranges).
+
+**Source B -- ICD-10 diagnosis-linked:**
+Each unique ICD-10 chapter (first character of TANIKODU) adds its cost range once (from EK-2C procedure group price distributions).
+
+#### 7.6 Cost Tier Classification
+
+Based on midpoint cost:
+
+| Cost Midpoint (TRY) | Tier | Turkish Label |
+|---------------------|------|---------------|
+| >= 10,000 | Very High | Yuksek maliyet -- aktif mudahale beklenir |
+| >= 5,000 | High | Yuksek -- yakin takip ve butce planlamasi gerekir |
+| >= 2,000 | Moderate | Orta duzey -- rutin bakim maliyeti |
+| >= 500 | Low | Dusuk -- minimal kaynak tuketimi |
+| >= 0 | Minimal | Minimal maliyet -- koruyucu saglik hizmeti |
+
+#### 7.7 Finance Analogy
+
+| Finance Concept | Healthcare Implementation |
+|----------------|--------------------------|
+| Bond bid/ask spread | SUT min/max price range per procedure |
+| Portfolio valuation | Patient total estimated cost |
+| Sector exposure | Cost breakdown by category (lab/visit/Rx/procedure) |
+| Net Asset Value | Midpoint cost estimate |
+| Benchmark pricing | SUT gazette as market reference |
+
+---
+
+### 8. Clinical Severity Index (CSI)
+
+**Module:** `src/outcomes.py` (621 lines)
+**Output:** Score in **[0, 100]** where 100 = most severe (note: inverted polarity from Health Index)
+
+The CSI aggregates 6 weighted clinical dimensions into a single severity score.
+
+#### 8.1 Formula
+
+```
+CSI = sum(component_score_i * weight_i for i = 1..6)
+CSI = clip(CSI, 0, 100)
+```
+
+#### 8.2 Components
+
+| Component | Weight | Raw Input | Normalization to [0, 100] |
+|-----------|--------|-----------|--------------------------|
+| Health Trend | 0.25 | OLS slope of health scores | `clip((-slope + 5) / 10 * 100, 0, 100)` |
+| Lab Volatility | 0.20 | std(health_scores) | `clip(volatility / 20 * 100, 0, 100)` |
+| Critical Fraction | 0.20 | % time in Critical regime | `clip(fraction * 100, 0, 100)` |
+| NLP Signal | 0.15 | mean NLP composite [-1,+1] | `clip((-nlp + 1) / 2 * 100, 0, 100)` |
+| Rx Intensity | 0.10 | Prescriptions per month | `clip(velocity / 10 * 100, 0, 100)` |
+| Comorbidity Burden | 0.10 | Count of comorbidities (0-6) | `clip(count / 4 * 100, 0, 100)` |
+
+#### 8.3 Component Normalization Details
+
+**Health Trend:** slope of -5 (rapid decline) maps to 100; slope of +5 (rapid improvement) maps to 0.
+
+**Lab Volatility:** std of 20 (highly variable) maps to 100; std of 0 maps to 0.
+
+**NLP Signal:** nlp of -1 (strongly negative notes) maps to 100; nlp of +1 maps to 0.
+
+**Prescription Velocity:**
+```
+if n_dated > 1:
+    rx_velocity = (n_prescriptions / (date_span_days + 1)) * 30    (Rx per month)
+elif n_dated == 1:
+    rx_velocity = 30.0    (single event assumed as 1/month)
+else:
+    rx_velocity = 0.0
+```
+
+#### 8.4 CSI Tiers
+
+| CSI Score | Tier | Action |
+|-----------|------|--------|
+| >= 75 | CRITICAL | Immediate clinical attention required |
+| >= 50 | HIGH | Active intervention recommended |
+| >= 25 | MODERATE | Enhanced monitoring needed |
+| >= 0 | LOW | Routine monitoring |
+
+#### 8.5 Inverted Display Score
+
+For UI consistency (higher = healthier):
+```
+csi_health_score = 100 - CSI
+```
+
+---
+
+### 9. Feature Correlations (Spearman)
+
+**Module:** `src/outcomes.py`, function `compute_feature_correlations()`
+
+Computes Spearman rank correlations between patient profile features and a target variable (default: `total_visits`).
+
+**Features tested:**
+`initial_health_score`, `final_health_score`, `mean_health_score`, `health_score_trend`, `health_score_volatility`, `n_lab_draws`, `n_critical_episodes`, `critical_fraction`, `mean_nlp_composite`, `n_prescriptions`, `prescription_velocity`, `n_comorbidities`, `csi_score`
+
+**Minimum sample size:** n >= 5 (raised from 3 because Spearman on n < 5 yields unreliable p-values).
+
+**Interpretation labels:**
+
+| |r| | Strength |
+|-----|----------|
+| >= 0.7 | Strong |
+| >= 0.4 | Moderate |
+| < 0.4 | Weak |
+
+---
+
+## Validation Framework
+
+**Module:** `src/validation.py` (368 lines)
+
+Validates the Health Index against established clinical severity benchmarks using Spearman rank correlation.
+
+### Benchmarks
+
+| Benchmark | Coverage | Missing Parameters |
+|-----------|----------|-------------------|
+| **SOFA** (Sequential Organ Failure Assessment) | 4/6 organ systems (Coagulation, Liver, Cardiovascular, Renal) | Respiratory, Neurological |
+| **APACHE II** (Acute Physiology and Chronic Health Eval) | 7/12 APS parameters (MAP, HR, Na, K, Creatinine, Hematocrit, WBC) | Temperature, RR, PaO2, pH, GCS |
+| **NEWS2** | Excluded -- only 3/7 parameters available | Insufficient coverage |
+
+Missing parameters default to 0 (conservative lower-bound).
+
+### Experiments
+
+| Experiment | Expected Direction | Test |
+|------------|-------------------|------|
+| Health Index vs Mean SOFA | Negative (higher HI = healthier = lower SOFA) | Spearman rho |
+| Health Index vs Max SOFA | Negative | Spearman rho |
+| Health Index vs Mean APACHE II | Negative | Spearman rho |
+| Health Index vs Max APACHE II | Negative | Spearman rho |
+
+### Pass Criteria
+
+A test passes when **all three** conditions are met:
+1. `r < 0` -- correlation is negative (expected direction)
+2. `p < 0.20` -- p-value below 0.20 (lenient due to limited parameter coverage)
+3. `n > 5` -- more than 5 samples
+
+### Significance Formatting
+
+| p-value | Display |
+|---------|---------|
+| < 0.001 | `p < 0.001 ***` |
+| < 0.01 | `p = X.XXX **` |
+| < 0.05 | `p = X.XXX *` |
+| < 0.10 | `p = X.XXX (trend)` |
+| >= 0.10 | `p = X.XXX (n.s.)` |
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/patients` | Top 20 patients by data completeness + full patient metadata |
+| `GET` | `/api/patients/search?q=&limit=` | Prefix search on patient IDs |
+| `GET` | `/api/cohort?page=&per_page=&sort_by=&order=&rating=&regime=` | Cohort KPIs, paginated composites, VaR summary, distributions, NLP scatter, SUT summary |
+| `GET` | `/api/patient/{patient_id}` | Full patient data (scores, timeline, VaR fan, NLP, labs, notes) |
+| `GET` | `/api/patient/{patient_id}/outcome` | ECI gauge + components, narrative, cohort ranking, correlations, SUT costs |
+| `GET` | `/api/validation` | Validation experiment results (SOFA/APACHE II) |
+| `POST` | `/api/chat` | SSE-streamed AI chatbot with patient/cohort context |
+
+---
+
+## Frontend Structure
+
+### Landing Page
+
+Full-screen hero with animated gradient, particle effects, 4 feature value cards, and "Launch Dashboard" CTA.
+
+### Dashboard Tabs
+
+| Tab | Name | Key Visualizations |
+|-----|------|--------------------|
+| 0 | **Cohort Overview** | KPI cards, rating distribution, NLP scatter, risk regime pie, paginated patient table, VaR summary |
+| 1 | **Patient Health Explorer** | Health score timeline, regime color-coded bars, VaR fan chart, NLP bar chart, lab sparklines, clinical notes, prescriptions |
+| 2 | **Patient Risk Explorer** | ECI gauge (semicircle), narrative panel, SUT cost card + breakdown chart, ECI component bars, cohort ranking, Spearman correlations |
+| 3 | **Validation** | Experiment result cards with pass/fail, statistics, p-values, clinical interpretation |
+
+### AI Chatbot
+
+Floating assistant (Gemini 2.5 Flash Lite via OpenRouter) with:
+- Patient-specific context (health scores, regime, VaR, ECI, SUT costs, comorbidities)
+- Cohort-level context (distributions, percentiles)
+- Tab-aware suggested prompts
+- SSE token streaming
+
+---
+
+## Score Polarity Contracts
+
+| Score | Range | Direction | Meaning |
+|-------|-------|-----------|---------|
+| `health_index` | 0 - 100 | Higher is better | 100 = healthy |
+| `nlp_raw` | -1 to +1 | Positive is good | +1 = strong recovery |
+| `nlp_normalized` | 0 - 100 | Higher is better | 100 = positive sentiment |
+| `composite_score` | 0 - 100 | Higher is better | 100 = lowest risk |
+| `eci_score` | 0 - 100 | Higher is WORSE | 100 = highest expected cost |
+| `csi_score` | 0 - 100 | Higher is WORSE | 100 = most severe |
+| `csi_health_score` | 0 - 100 | Higher is better | 100 = least severe |
+| `var_pct` | Unbounded | Negative is risk | -10% = high risk of decline |
+| `sut_cost_mid` | 0+ TRY | Higher is costlier | Absolute currency amount |
+
+---
+
+## Tech Stack
+
+### Backend
+- **Python 3.10+** with FastAPI + Uvicorn
+- **NumPy, Pandas, SciPy** for computation
+- **Pydantic** for request validation
+- **CORS + GZip** middleware
+
+### Frontend
+- **Next.js 16** (App Router) with React 19
+- **TypeScript 5**
+- **Tailwind CSS 4** with glassmorphism design system
+- **Recharts 3** for data visualization
+- **Radix UI** for accessible primitives
+
+### AI/ML
+- **Gemini 2.5 Flash Lite** (Google) via OpenRouter for NLP scoring and chatbot
+- **NexGene AI** (asa-mini model) for reference interval validation
+
+### Data
+- **SUT Gazette** (EK-2B, EK-2C) -- official Turkish healthcare pricing
+- **Parquet** for cached pipeline artifacts
+
+---
+
+## Project Structure
+
+```
+.
++-- api.py                          # FastAPI server (7 endpoints)
++-- src/
+|   +-- __init__.py                 # Package exports + polarity contracts
+|   +-- data_loader.py              # Load lab/visit/Rx data
+|   +-- health_index.py             # Health Index scoring engine
+|   +-- patient_regime.py           # 4-state regime classification
+|   +-- health_var.py               # Monte Carlo Health VaR
+|   +-- nlp_llm.py                  # LLM-based NLP scoring
+|   +-- fusion.py                   # Composite risk score + rating
+|   +-- eci.py                      # Expected Cost Intensity
+|   +-- sut_pricing.py              # SUT cost estimation
+|   +-- sut_catalog.py              # SUT gazette parser
+|   +-- outcomes.py                 # Patient profiles + CSI + narratives
+|   +-- validation.py               # SOFA/APACHE II validation
+|   +-- chatbot.py                  # AI chatbot context + streaming
+|   +-- visualizer.py               # Matplotlib plotting utilities
++-- frontend/
+|   +-- src/app/page.tsx            # Main page (landing + dashboard)
+|   +-- src/components/             # React components
+|   +-- src/lib/types.ts            # TypeScript interfaces
+|   +-- src/lib/constants.ts        # Colors, ratings, chart config
++-- data/
+|   +-- sut_ek2b.json              # 5,074 SUT procedures (parsed)
+|   +-- sut_ek2c.json              # 2,423 SUT packages (parsed)
++-- scripts/                        # Offline scoring scripts
++-- docs/                           # Documentation
++-- sut data/                       # Raw SUT gazette Excel files
+```

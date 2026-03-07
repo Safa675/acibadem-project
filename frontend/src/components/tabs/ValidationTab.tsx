@@ -412,9 +412,10 @@ export default function ValidationTab({ data, loading }: Props) {
                 Missing components default to 0, biasing all institutional scores downward (conservative).
               </li>
               <li>
-                <strong className="text-slate-200">Small sample size:</strong>{" "}
-                Correlations are computed over ~5-7 patients. Results are directional evidence only;
-                statistical power is limited. Re-validate on larger cohorts before clinical use.
+                <strong className="text-slate-200">Sample context:</strong>{" "}
+                Correlations are computed over the full cohort (~8,000+ patients with visit data).
+                Institutional benchmark scores (SOFA, APACHE II) rely on partial parameters,
+                which may limit interpretability for borderline cases.
               </li>
               <li>
                 <strong className="text-slate-200">Outpatient bias:</strong>{" "}

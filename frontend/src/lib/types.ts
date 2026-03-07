@@ -268,6 +268,87 @@ export interface OutcomeData {
   cohort_total: number;
   feature_correlations: FeatureCorrelation[];
   sut_cost: SUTCostEstimate | null;
+  drg_summary: DRGSummaryData | null;
+  cost_var: CostVaRData | null;
+  reimbursement_gaps: ReimbursementGapData | null;
+  cost_trajectory: CostTrajectoryData | null;
+}
+
+// Phase 4b: DRG Episode Cost Modeling
+export interface DRGEpisodeData {
+  episode_id: number;
+  primary_icd10: string;
+  primary_icd10_chapter: string;
+  description: string;
+  los_days: number;
+  lab_cost: number;
+  visit_cost: number;
+  rx_cost: number;
+  procedure_cost: number;
+  total_cost: number;
+  admission_date: string | null;
+  discharge_date: string | null;
+}
+
+export interface DRGSummaryData {
+  n_episodes: number;
+  total_drg_cost: number;
+  mean_episode_cost: number;
+  most_expensive_drg: string;
+  dominant_icd10_chapter: string;
+  episodes: DRGEpisodeData[];
+}
+
+// Phase 4c: Cost VaR (Monte Carlo)
+export interface CostVaRData {
+  confidence_level: number;
+  var_amount: number;
+  expected_cost: number;
+  cvar_amount: number;
+  cost_p5: number;
+  cost_p25: number;
+  cost_p50: number;
+  cost_p75: number;
+  cost_p95: number;
+  simulation_count: number;
+  cost_distribution: number[];
+}
+
+// Phase 4d: Reimbursement Gap Analysis
+export interface ReimbursementGapItem {
+  category: string;
+  estimated_actual_cost: number;
+  sut_reimbursement: number;
+  gap_amount: number;
+  gap_percent: number;
+  status: string; // "covered" | "partial" | "deficit"
+}
+
+export interface ReimbursementGapData {
+  total_estimated_cost: number;
+  total_reimbursement: number;
+  total_gap: number;
+  overall_coverage_pct: number;
+  risk_rating: string; // "low" | "medium" | "high"
+  gaps: ReimbursementGapItem[];
+}
+
+// Phase 4e: Cost Trajectory Forecasting
+export interface CostTrajectoryPoint {
+  period: string;
+  cumulative_cost: number;
+  period_cost: number;
+  n_visits: number;
+  n_tests: number;
+}
+
+export interface CostTrajectoryData {
+  total_forecast_cost: number;
+  forecast_horizon_months: number;
+  trend: string; // "increasing" | "stable" | "decreasing"
+  monthly_burn_rate: number;
+  projected_annual_cost: number;
+  trajectory: CostTrajectoryPoint[];
 }
 
 export interface ValidationExperiment {

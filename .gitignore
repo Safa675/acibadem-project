@@ -30,8 +30,9 @@ frontend/.next/
 frontend/node_modules/
 frontend/*.tsbuildinfo
 
-# Data
+# Data (sensitive patient data - never commit)
 *.ods
+*.parquet
 ACUHIT 2/
 
 # Cache / pipeline artifacts (sensitive patient data)
