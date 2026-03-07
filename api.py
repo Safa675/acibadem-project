@@ -401,6 +401,12 @@ def _load_pipeline() -> dict:
     if _nlp_parquet.exists():
         try:
             nlp_results_df = pd.read_parquet(_nlp_parquet)
+            # Drop junk rows with null / "None" / empty patient IDs
+            nlp_results_df = nlp_results_df[
+                nlp_results_df["patient_id"].notna()
+                & (nlp_results_df["patient_id"].astype(str) != "None")
+                & (nlp_results_df["patient_id"].astype(str) != "")
+            ]
             # Deduplicate (some early runs produced dupes)
             nlp_results_df = nlp_results_df.drop_duplicates(
                 subset=["patient_id", "visit_date"]
@@ -581,6 +587,15 @@ def _load_pipeline() -> dict:
     )
     _log_rss("ECI complete")
 
+    # Compute per-patient data completeness (mean across all snapshots)
+    # Must happen BEFORE all_snapshots is released.
+    data_completeness_by_pid: dict[str, float] = {}
+    for pid, snaps in all_snapshots.items():
+        if snaps:
+            data_completeness_by_pid[str(pid)] = round(
+                sum(s.data_completeness for s in snaps) / len(snaps), 3
+            )
+
     # Large intermediate object no longer needed by active endpoints.
     del all_snapshots
     gc.collect()
@@ -607,6 +622,11 @@ def _load_pipeline() -> dict:
     )
     mean_eci_cached = (
         round(float(eci_df["eci_score"].mean()), 1) if not eci_df.empty else 0.0
+    )
+    mean_data_completeness_cached = (
+        round(sum(data_completeness_by_pid.values()) / len(data_completeness_by_pid), 3)
+        if data_completeness_by_pid
+        else 0.0
     )
     n_critical_cached = sum(
         1
@@ -699,6 +719,8 @@ def _load_pipeline() -> dict:
         "kpi_n_critical": n_critical_cached,
         "kpi_rating_dist": rating_dist_cached,
         "kpi_regime_dist": regime_dist_cached,
+        "kpi_mean_data_completeness": mean_data_completeness_cached,
+        "data_completeness_by_pid": data_completeness_by_pid,
     }
     return _pipeline_cache
 
@@ -808,11 +830,18 @@ def get_cohort(
     mean_eci = ctx["kpi_mean_eci"]
     n_critical = ctx["kpi_n_critical"]
     total_rx = ctx["kpi_total_rx"]
+    mean_data_completeness = ctx["kpi_mean_data_completeness"]
+    dc_by_pid = ctx["data_completeness_by_pid"]
 
     # ── Build composites table (full, then filter, sort, paginate) ────────
     composites_list_full: list[dict] = []
     if not composites.empty:
         display_df = composites.copy()
+
+        # Annotate data completeness per patient
+        display_df["data_completeness"] = display_df["patient_id"].map(
+            lambda pid: dc_by_pid.get(str(pid), 0.5)
+        )
 
         # Merge ECI + profile columns
         if not profiles_df.empty:
@@ -936,6 +965,7 @@ def get_cohort(
             "n_high_risk": n_high_risk,
             "n_critical": n_critical,
             "total_rx": total_rx,
+            "mean_data_completeness": round(mean_data_completeness * 100, 1),
         },
         "composites": composites_page,
         "composites_pagination": composites_pagination,
@@ -1014,6 +1044,9 @@ def get_patient(patient_id: str):
         else None,
         "n_lab_draws": profile.n_lab_draws if profile else 0,
         "n_prescriptions": profile.n_prescriptions if profile else 0,
+        "data_completeness": round(
+            ctx["data_completeness_by_pid"].get(patient_id, 0.5) * 100, 1
+        ),
     }
 
     # Comorbidities

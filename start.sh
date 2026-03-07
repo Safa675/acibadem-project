@@ -178,14 +178,42 @@ done
 echo -e "${GREEN}[2/2]${NC} Starting Next.js frontend..."
 
 EXISTING_NEXT_PID="$(find_existing_next_dev_pid || true)"
-if [ -n "$EXISTING_NEXT_PID" ]; then
+if [ -n "$EXISTING_NEXT_PID" ] && kill -0 "$EXISTING_NEXT_PID" 2>/dev/null; then
     FRONTEND_REUSED=1
     FRONTEND_PORT="$(detect_existing_frontend_port "$EXISTING_NEXT_PID" || true)"
     if [ -z "$FRONTEND_PORT" ]; then
         FRONTEND_PORT=3000
     fi
-    echo -e "${YELLOW}      Reusing existing Next.js dev server (PID $EXISTING_NEXT_PID) on :$FRONTEND_PORT${NC}"
+    # Verify the port is actually listening before trusting the reuse
+    if is_port_in_use "$FRONTEND_PORT"; then
+        echo -e "${YELLOW}      Reusing existing Next.js dev server (PID $EXISTING_NEXT_PID) on :$FRONTEND_PORT${NC}"
+    else
+        echo -e "${YELLOW}      Found stale Next.js PID $EXISTING_NEXT_PID but port $FRONTEND_PORT is not listening — killing and starting fresh${NC}"
+        kill "$EXISTING_NEXT_PID" 2>/dev/null || true
+        # Wait for process to fully exit (up to 5s)
+        for _k in $(seq 1 10); do
+            kill -0 "$EXISTING_NEXT_PID" 2>/dev/null || break
+            sleep 0.5
+        done
+        # Force kill if still alive
+        if kill -0 "$EXISTING_NEXT_PID" 2>/dev/null; then
+            echo -e "${YELLOW}      Force-killing stale PID $EXISTING_NEXT_PID${NC}"
+            kill -9 "$EXISTING_NEXT_PID" 2>/dev/null || true
+            sleep 1
+        fi
+        # Wait for socket release (up to 5s) in case the port is in TIME_WAIT
+        for _w in $(seq 1 10); do
+            is_port_in_use "$FRONTEND_PORT" || break
+            sleep 0.5
+        done
+        FRONTEND_REUSED=0
+        EXISTING_NEXT_PID=""
+    fi
 else
+    EXISTING_NEXT_PID=""
+fi
+
+if [ -z "$EXISTING_NEXT_PID" ]; then
     if [ -f "$FRONTEND_LOCK_FILE" ]; then
         echo -e "${YELLOW}      Removing stale Next.js lock file: $FRONTEND_LOCK_FILE${NC}"
         rm -f "$FRONTEND_LOCK_FILE"
@@ -198,7 +226,7 @@ else
     echo -e "${YELLOW}      Launching Next.js on :$FRONTEND_PORT${NC}"
 
     cd "$FRONTEND_DIR"
-    npm run dev -- --port "$FRONTEND_PORT" &
+    npm run dev -- --hostname 127.0.0.1 --port "$FRONTEND_PORT" &
     FRONTEND_PID=$!
     OWN_FRONTEND=1
 

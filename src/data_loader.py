@@ -118,8 +118,7 @@ _ANA_TEXT_COLS = [
 _ANA_VITAL_COLS = {
     "systolic_bp": "systolic_bp",
     "diastolic_bp": "diastolic_bp",
-    "pulse": "pulse",
-    "spo2": "spo2",
+    # pulse and spo2 dropped — 96.7% and 99.7% missing respectively (see health_index.py)
 }
 
 _ANA_OUTCOME_COLS = {
@@ -331,7 +330,7 @@ def get_patient_visits(ana_df: pd.DataFrame, patient_id: PatientId) -> pd.DataFr
 
 
 def get_patient_vitals(ana_df: pd.DataFrame, patient_id: PatientId) -> pd.DataFrame:
-    """Return vitals time-series (date, systolic_bp, diastolic_bp, pulse, spo2)."""
+    """Return vitals time-series (date + active vital columns from _ANA_VITAL_COLS)."""
     vital_cols = [c for c in _ANA_VITAL_COLS.keys() if c in ana_df.columns]
     cols = ["visit_date"] + vital_cols
     visits = get_patient_visits(ana_df, patient_id)[

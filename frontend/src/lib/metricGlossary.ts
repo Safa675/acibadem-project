@@ -26,6 +26,17 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
     range: "[0, 100]",
     source: "HealthIndexBuilder (src/health_index.py)",
   },
+  "cohort.mean_data_completeness": {
+    id: "cohort.mean_data_completeness",
+    title: "Data Completeness",
+    definition:
+      "Mean fraction of available signal sources (labs + vitals) across all patient snapshots, expressed as a percentage.",
+    formula: "completeness = 50% if labs only, 100% if labs + vitals",
+    interpretation:
+      "Higher values indicate more complete data coverage. Patients with only lab data score 50%; patients with both labs and vitals score 100%.",
+    range: "[0%, 100%]",
+    source: "HealthIndexBuilder (src/health_index.py)",
+  },
   "cohort.mean_eci": {
     id: "cohort.mean_eci",
     title: "Mean ECI Score",
