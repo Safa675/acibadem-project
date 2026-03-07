@@ -34,24 +34,27 @@ ACCENT = "#4FC3F7"  # light blue
 
 
 def _setup_dark_theme():
-    plt.rcParams.update({
-        "figure.facecolor": DARK_BG,
-        "axes.facecolor": PANEL_BG,
-        "axes.edgecolor": GRID_COLOR,
-        "axes.labelcolor": TEXT_COLOR,
-        "xtick.color": TEXT_COLOR,
-        "ytick.color": TEXT_COLOR,
-        "text.color": TEXT_COLOR,
-        "grid.color": GRID_COLOR,
-        "grid.alpha": 0.4,
-        "font.family": "DejaVu Sans",
-        "font.size": 11,
-    })
+    plt.rcParams.update(
+        {
+            "figure.facecolor": DARK_BG,
+            "axes.facecolor": PANEL_BG,
+            "axes.edgecolor": GRID_COLOR,
+            "axes.labelcolor": TEXT_COLOR,
+            "xtick.color": TEXT_COLOR,
+            "ytick.color": TEXT_COLOR,
+            "text.color": TEXT_COLOR,
+            "grid.color": GRID_COLOR,
+            "grid.alpha": 0.4,
+            "font.family": "DejaVu Sans",
+            "font.size": 11,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
 # 1. Regime Timeline Chart
 # ---------------------------------------------------------------------------
+
 
 def plot_regime_timeline(
     result: PatientRegimeResult,
@@ -89,21 +92,43 @@ def plot_regime_timeline(
         axis.axvspan(x0, x1, alpha=0.25, color=c, linewidth=0)
 
     # Health score line
-    axis.plot(dates, scores, color=ACCENT, linewidth=2.5, zorder=5, label="Health Score")
+    axis.plot(
+        dates, scores, color=ACCENT, linewidth=2.5, zorder=5, label="Health Score"
+    )
     axis.scatter(dates, scores, color=ACCENT, s=60, zorder=6)
 
     # MA line if available
     if "ma" in df.columns and df["ma"].notna().any():
-        axis.plot(dates, df["ma"].tolist(), color="#AAAAAA", linewidth=1.3,
-                  linestyle="--", zorder=4, label="Moving Average", alpha=0.7)
+        axis.plot(
+            dates,
+            df["ma"].tolist(),
+            color="#AAAAAA",
+            linewidth=1.3,
+            linestyle="--",
+            zorder=4,
+            label="Moving Average",
+            alpha=0.7,
+        )
 
     # Mark prescription events
     if prescription_dates:
         for presc_date in prescription_dates:
-            axis.axvline(presc_date, color="#FF6B6B", linewidth=1.5,
-                        linestyle=":", alpha=0.8, zorder=7)
-        axis.axvline(prescription_dates[0], color="#FF6B6B", linewidth=1.5,
-                    linestyle=":", alpha=0.8, label="Prescription Event")
+            axis.axvline(
+                presc_date,
+                color="#FF6B6B",
+                linewidth=1.5,
+                linestyle=":",
+                alpha=0.8,
+                zorder=7,
+            )
+        axis.axvline(
+            prescription_dates[0],
+            color="#FF6B6B",
+            linewidth=1.5,
+            linestyle=":",
+            alpha=0.8,
+            label="Prescription Event",
+        )
 
     axis.set_ylim(0, 105)
     axis.set_ylabel("Health Score", fontsize=12)
@@ -116,17 +141,30 @@ def plot_regime_timeline(
 
     # State legend
     legend_patches = [
-        mpatches.Patch(color=STATE_COLORS[PatientState.STABLE], alpha=0.6,
-                       label="🟢 Stable"),
-        mpatches.Patch(color=STATE_COLORS[PatientState.RECOVERING], alpha=0.6,
-                       label="🟡 Recovering"),
-        mpatches.Patch(color=STATE_COLORS[PatientState.DETERIORATING], alpha=0.6,
-                       label="🟠 Deteriorating"),
-        mpatches.Patch(color=STATE_COLORS[PatientState.CRITICAL], alpha=0.6,
-                       label="🔴 Critical"),
+        mpatches.Patch(
+            color=STATE_COLORS[PatientState.STABLE], alpha=0.6, label="🟢 Stable"
+        ),
+        mpatches.Patch(
+            color=STATE_COLORS[PatientState.RECOVERING],
+            alpha=0.6,
+            label="🟡 Recovering",
+        ),
+        mpatches.Patch(
+            color=STATE_COLORS[PatientState.DETERIORATING],
+            alpha=0.6,
+            label="🟠 Deteriorating",
+        ),
+        mpatches.Patch(
+            color=STATE_COLORS[PatientState.CRITICAL], alpha=0.6, label="🔴 Critical"
+        ),
     ]
-    axis.legend(handles=legend_patches, loc="upper right", fontsize=9,
-               framealpha=0.3, facecolor=PANEL_BG)
+    axis.legend(
+        handles=legend_patches,
+        loc="upper right",
+        fontsize=9,
+        framealpha=0.3,
+        facecolor=PANEL_BG,
+    )
 
     plt.tight_layout()
 
@@ -139,6 +177,7 @@ def plot_regime_timeline(
 # ---------------------------------------------------------------------------
 # 2. HealthVaR Fan Chart
 # ---------------------------------------------------------------------------
+
 
 def plot_health_var_fan(
     history_series: list[SeriesPoint],
@@ -172,41 +211,89 @@ def plot_health_var_fan(
     p95_vals = [var_result.current_score, *[var_result.p95] * var_result.horizon_draws]
 
     # History line
-    axis.plot(hist_dates, hist_scores, color=ACCENT, linewidth=2.5,
-              label="Historical Health Score", zorder=5)
+    axis.plot(
+        hist_dates,
+        hist_scores,
+        color=ACCENT,
+        linewidth=2.5,
+        label="Historical Health Score",
+        zorder=5,
+    )
     axis.scatter(hist_dates, hist_scores, color=ACCENT, s=50, zorder=6)
 
     # Separator
     axis.axvline(last_date, color="#AAAAAA", linewidth=1, linestyle="--", alpha=0.6)
 
     # Fan chart
-    axis.fill_between(future_dates, p05_vals, p95_vals,
-                      color="#4FC3F7", alpha=0.12, label="5th–95th percentile")
-    axis.fill_between(future_dates, p25_vals, p75_vals,
-                      color="#4FC3F7", alpha=0.25, label="25th–75th percentile")
-    axis.plot(future_dates, futures, color="#4FC3F7",
-              linewidth=2, linestyle="--", label="Median forecast")
-    axis.plot(future_dates, p05_vals, color=STATE_COLORS[PatientState.CRITICAL],
-              linewidth=1.5, linestyle=":", label=f"Health VaR (95%) = {var_result.p05:.1f}")
+    axis.fill_between(
+        future_dates,
+        p05_vals,
+        p95_vals,
+        color="#4FC3F7",
+        alpha=0.12,
+        label="5th–95th percentile",
+    )
+    axis.fill_between(
+        future_dates,
+        p25_vals,
+        p75_vals,
+        color="#4FC3F7",
+        alpha=0.25,
+        label="25th–75th percentile",
+    )
+    axis.plot(
+        future_dates,
+        futures,
+        color="#4FC3F7",
+        linewidth=2,
+        linestyle="--",
+        label="Median forecast",
+    )
+    axis.plot(
+        future_dates,
+        p05_vals,
+        color=STATE_COLORS[PatientState.CRITICAL],
+        linewidth=1.5,
+        linestyle=":",
+        label=f"Health VaR (95%) = {var_result.p05:.1f}",
+    )
 
     # VaR badge
-    tier_colors = {"GREEN": "#2ECC71", "YELLOW": "#F39C12",
-                   "ORANGE": "#E67E22", "RED": "#E74C3C"}
+    tier_colors = {
+        "GREEN": "#2ECC71",
+        "YELLOW": "#F39C12",
+        "ORANGE": "#E67E22",
+        "RED": "#E74C3C",
+    }
     badge_color = tier_colors.get(var_result.risk_tier, "#AAAAAA")
     axis.text(
-        0.98, 0.97,
+        0.98,
+        0.97,
         f"Health VaR: {var_result.var_pct:+.1f}%\nTier: {var_result.risk_tier}",
-        transform=axis.transAxes, ha="right", va="top", fontsize=10,
-        color=badge_color, fontweight="bold",
-        bbox=dict(boxstyle="round,pad=0.4", facecolor=PANEL_BG, edgecolor=badge_color, alpha=0.8),
+        transform=axis.transAxes,
+        ha="right",
+        va="top",
+        fontsize=10,
+        color=badge_color,
+        fontweight="bold",
+        bbox=dict(
+            boxstyle="round,pad=0.4",
+            facecolor=PANEL_BG,
+            edgecolor=badge_color,
+            alpha=0.8,
+        ),
     )
 
     axis.set_ylim(0, 105)
     axis.set_ylabel("Health Score", fontsize=12)
     axis.set_xlabel("Date", fontsize=12)
     label = patient_label or f"Patient {var_result.patient_id}"
-    axis.set_title(f"HealthVaR™ — {label} | Next {var_result.horizon_draws} lab draws",
-                   fontsize=14, fontweight="bold", pad=12)
+    axis.set_title(
+        f"HealthVaR™ — {label} | Next {var_result.horizon_draws} lab draws",
+        fontsize=14,
+        fontweight="bold",
+        pad=12,
+    )
     axis.legend(loc="lower left", fontsize=9, framealpha=0.3, facecolor=PANEL_BG)
     axis.grid(True, alpha=0.3)
 
@@ -220,9 +307,10 @@ def plot_health_var_fan(
 # 3. NLP Signal Visualization
 # ---------------------------------------------------------------------------
 
+
 def plot_nlp_heatmap(
     nlp_df: pd.DataFrame,
-    patient_id: int,
+    patient_id: str,
     ax: plt.Axes | None = None,
     save_path: str | None = None,
 ) -> plt.Figure:
@@ -235,16 +323,27 @@ def plot_nlp_heatmap(
         fig = axis.get_figure()
 
     # Filter nlp columns
-    nlp_cols = [c for c in nlp_df.columns if c.startswith("nlp_") and c != "nlp_composite"]
+    nlp_cols = [
+        c for c in nlp_df.columns if c.startswith("nlp_") and c != "nlp_composite"
+    ]
     if not nlp_cols or nlp_df.empty:
-        axis.text(0.5, 0.5, "No NLP data available", ha="center", va="center",
-                  transform=axis.transAxes, color=TEXT_COLOR)
+        axis.text(
+            0.5,
+            0.5,
+            "No NLP data available",
+            ha="center",
+            va="center",
+            transform=axis.transAxes,
+            color=TEXT_COLOR,
+        )
         return fig
 
     data = nlp_df[nlp_cols].fillna(0).values
     labels = [c.replace("nlp_", "").replace("_", " ") for c in nlp_cols]
-    date_labels = [d.strftime("%d %b") if hasattr(d, "strftime") else str(d)
-                   for d in nlp_df["visit_date"]]
+    date_labels = [
+        d.strftime("%d %b") if hasattr(d, "strftime") else str(d)
+        for d in nlp_df["visit_date"]
+    ]
 
     im = axis.imshow(data.T, cmap="RdYlGn", vmin=-0.5, vmax=0.5, aspect="auto")
     plt.colorbar(im, ax=axis, label="NLP Score (+ recovery, − deterioration)")
@@ -253,7 +352,9 @@ def plot_nlp_heatmap(
     axis.set_xticklabels(date_labels, rotation=45, ha="right", fontsize=9)
     axis.set_yticks(range(len(labels)))
     axis.set_yticklabels(labels, fontsize=9)
-    axis.set_title(f"Clinical NLP Signal — Patient {patient_id}", fontsize=13, fontweight="bold")
+    axis.set_title(
+        f"Clinical NLP Signal — Patient {patient_id}", fontsize=13, fontweight="bold"
+    )
 
     plt.tight_layout()
     if save_path:
@@ -264,6 +365,7 @@ def plot_nlp_heatmap(
 # ---------------------------------------------------------------------------
 # 4. Side-by-Side Hook Chart (for video opening)
 # ---------------------------------------------------------------------------
+
 
 def plot_stock_vs_patient_hook(
     patient_regime: PatientRegimeResult,
@@ -294,9 +396,12 @@ def plot_stock_vs_patient_hook(
 
     ax_stock.set_facecolor(PANEL_BG)
     ax_stock.plot(stock_dates, stock_prices, color=ACCENT, linewidth=2)
-    ax_stock.fill_between(stock_dates, stock_prices, min(stock_prices) * 0.95,
-                          alpha=0.1, color=ACCENT)
-    ax_stock.set_title("📈 Stock Price — Regime Classification", fontsize=13, fontweight="bold")
+    ax_stock.fill_between(
+        stock_dates, stock_prices, min(stock_prices) * 0.95, alpha=0.1, color=ACCENT
+    )
+    ax_stock.set_title(
+        "📈 Stock Price — Regime Classification", fontsize=13, fontweight="bold"
+    )
     ax_stock.set_ylabel("Price (₺)", fontsize=11)
     ax_stock.grid(True, alpha=0.3)
 
@@ -309,13 +414,19 @@ def plot_stock_vs_patient_hook(
 
     # --- Patient chart ---
     plot_regime_timeline(patient_regime, patient_label=patient_label, ax=ax_patient)
-    ax_patient.set_title(f"🏥 Patient Health Score — PatientRegime™", fontsize=13, fontweight="bold")
+    ax_patient.set_title(
+        f"🏥 Patient Health Score — PatientRegime™", fontsize=13, fontweight="bold"
+    )
 
     # Shared annotation
     fig.text(
-        0.5, 0.01,
+        0.5,
+        0.01,
         '"The math is identical. Same regime engine, same risk framework — different data."',
-        ha="center", fontsize=12, style="italic", color="#AABBCC",
+        ha="center",
+        fontsize=12,
+        style="italic",
+        color="#AABBCC",
     )
 
     if save_path:
@@ -326,6 +437,7 @@ def plot_stock_vs_patient_hook(
 # ---------------------------------------------------------------------------
 # 5. Cohort risk dashboard
 # ---------------------------------------------------------------------------
+
 
 def plot_cohort_risk_dashboard(
     composites_df: pd.DataFrame,
@@ -345,24 +457,37 @@ def plot_cohort_risk_dashboard(
     ratings = df["rating"].tolist()
 
     _color_map = {
-        "AAA": "#2ECC71", "AA": "#27AE60", "A": "#F39C12",
-        "BBB": "#E67E22", "BB": "#C0392B", "B/CCC": "#922B21",
+        "AAA": "#2ECC71",
+        "AA": "#27AE60",
+        "A": "#F39C12",
+        "BBB": "#E67E22",
+        "BB": "#C0392B",
+        "B/CCC": "#922B21",
     }
     bar_colors = [_color_map.get(r, "#AAAAAA") for r in ratings]
     bars = ax.barh(labels, scores, color=bar_colors, edgecolor=PANEL_BG, height=0.6)
 
     # Rating labels
     for bar, rating, score in zip(bars, ratings, scores):
-        ax.text(score + 0.5, bar.get_y() + bar.get_height() / 2,
-                rating, va="center", ha="left", fontsize=9, fontweight="bold",
-                color=_color_map.get(rating, "#AAAAAA"))
+        ax.text(
+            score + 0.5,
+            bar.get_y() + bar.get_height() / 2,
+            rating,
+            va="center",
+            ha="left",
+            fontsize=9,
+            fontweight="bold",
+            color=_color_map.get(rating, "#AAAAAA"),
+        )
 
     ax.set_xlim(0, 115)
     ax.axvline(80, color="#2ECC71", linewidth=0.8, linestyle="--", alpha=0.5)
     ax.axvline(50, color="#E67E22", linewidth=0.8, linestyle="--", alpha=0.5)
     ax.axvline(20, color="#E74C3C", linewidth=0.8, linestyle="--", alpha=0.5)
     ax.set_xlabel("Composite Health Score [0–100]", fontsize=12)
-    ax.set_title("HealthQuant™ — Patient Risk Dashboard", fontsize=14, fontweight="bold")
+    ax.set_title(
+        "HealthQuant™ — Patient Risk Dashboard", fontsize=14, fontweight="bold"
+    )
     ax.grid(True, axis="x", alpha=0.3)
 
     plt.tight_layout()

@@ -1,3 +1,96 @@
+# RAM-First Performance Optimization Plan (NLP Deactivated)
+
+## Checklist
+
+- [x] Set NLP-off default in `src/nlp_signal.py` (`ILAY_SKIP_NLP` defaults to `1`)
+- [x] Return lightweight empty NLP payloads on skip path (`nlp_results={}`, `nli_scores_cache={}`)
+- [x] Remove import-time transformer load and remove NLP startup task from `api.py`
+- [x] Remove `dict(list(groupby))` DataFrame-copy patterns in startup/composite/outcome paths
+- [x] Stage startup execution with bounded concurrency + sequential benchmark scoring and explicit `gc.collect()`
+- [x] Add per-stage RSS logging (`/proc/self/status`) to `api.py`
+- [x] Stop caching `all_snapshots` in `_pipeline_cache`
+- [x] Update runtime defaults in `start.sh` (`ILAY_SKIP_NLP=1`, backend reload opt-in via `ILAY_BACKEND_RELOAD`)
+- [x] Update quick-start note in `README.md` for RAM-first defaults
+- [x] Run backend smoke tests and memory/performance verification commands
+
+## Review
+
+- NLP model load path is now deactivated by default and startup logs no longer show HuggingFace/transformer initialization.
+- API schema behavior stayed stable with NLP disabled:
+  - `/api/patient/{id}` now returns `nlp_bars: []` and `nli_scores: []` (verified in smoke run).
+  - `/api/cohort` and `/api/validation` return successfully.
+- Startup orchestration is now staged and logged:
+  - `Stage 1/5` data load
+  - `Stage 2/5` health index build
+  - `Stage 3/5` regimes + VaR (`max_workers=2`)
+  - `Stage 4/5` SOFA/NEWS2/APACHE sequential with `del` + `gc.collect()`
+  - `Stage 5/5` composites/outcomes/validation + cleanup
+- Stage RSS logs from live run stayed around ~1.5–2.1 GB during the major startup stages and confirmed post-cleanup release path executes.
+- Timed startup capture:
+  - Command: `/usr/bin/time -v ... uvicorn api:app ...` (ready-check harness)
+  - Elapsed: `4:16.12`
+  - Maximum resident set size: `8,893,136 kB`
+  - Pipeline completion log: `Pipeline fully loaded in 250.6s`
+- Heavy-stage output counts remained aligned with prior snapshot expectations on the same dataset:
+  - VaR patients: `49,401`
+  - SOFA per-patient rows: `13,743`
+  - NEWS2 per-patient rows: `4,270`
+  - APACHE II per-patient rows: `13,743`
+
+---
+
+# Resolve Next.js Lock/Port Startup Conflict
+
+## Checklist
+
+- [x] Diagnose active `next dev` process and `.next/dev/lock` behavior in current environment
+- [x] Add frontend preflight in `start.sh` to reuse existing repo-scoped `next dev` process
+- [x] Add stale lock cleanup when no active frontend process exists
+- [x] Add explicit frontend port resolution (`3000` default, free-port fallback) and pass `-p`
+- [x] Print actual resolved frontend URL in startup summary
+- [x] Harden cleanup with `EXIT` trap and guarded kill/wait logic
+- [x] Update README quick-start notes with single-instance behavior and recovery commands
+- [x] Run script lint/syntax and process-detection smoke checks
+
+## Review
+
+- Root cause confirmed: one `next dev` instance was already listening on `:3000`, and a second launch attempted `:3001` but failed on `frontend/.next/dev/lock` before serving.
+- `start.sh` now detects/reuses an existing frontend process for this repo, preventing duplicate `next dev` launches and lock collisions.
+- Added stale lock removal (`frontend/.next/dev/lock`) only when no matching frontend process is running.
+- Added deterministic port selection and startup command `npm run dev -- --port <resolved_port>`.
+- Startup banner now reports the actual frontend URL instead of always printing `http://localhost:3000`.
+- Cleanup now runs on all exits (`trap EXIT`) and only kills processes started by this script instance.
+- README updated with behavior notes plus a manual recovery sequence for interrupted sessions.
+
+---
+
+# ACUHIT Parquet Downsizing to 2025+ (and Default Switch)
+
+## Checklist
+
+- [x] Add reusable parquet filtering CLI at `scripts/filter_acuhit2_parquets_by_date.py`
+- [x] Generate `.cache/acuhit2_*_from2025.parquet` from `.cache/acuhit2_*_from2021.parquet` with inclusive cutoff `>= 2025-01-01`
+- [x] Preserve parquet schema and `SNAPPY` compression for all generated files
+- [x] Switch `src/data_loader.py` default parquet paths to `*_from2025.parquet`
+- [x] Switch `scripts/prepare_nlp_data.py` default anadata source to `acuhit2_anadata_from2025.parquet`
+- [x] Verify output row counts and date boundaries against expected values
+- [x] Run consumer smoke tests (`src.data_loader` and `scripts/prepare_nlp_data.py`)
+
+## Review
+
+- Added `scripts/filter_acuhit2_parquets_by_date.py` with CLI flags `--min-date` (default `2025-01-01`), `--cache-dir` (default `.cache`), and `--overwrite`.
+- Filtering command executed successfully:
+  - `python scripts/filter_acuhit2_parquets_by_date.py --min-date 2025-01-01 --overwrite`
+  - Output counts: lab `7,032,687`, anadata `196,781`, recete `775,995`.
+- Boundary verification confirmed all kept rows satisfy cutoff (`< 2025-01-01` rows = `0` in each output parquet).
+- `src.data_loader` smoke load with defaults succeeded and reported minimum dates:
+  - lab `2025-01-01 00:05:35`
+  - anadata `2025-01-01 02:48:09`
+  - recete `2025-01-01 00:47:06`
+- `python scripts/prepare_nlp_data.py` succeeded with `from2025` anadata and regenerated `nlp_data/train.csv` + `nlp_data/test.csv`.
+
+---
+
 # Frosted Cards Separation Fix
 
 ## Checklist

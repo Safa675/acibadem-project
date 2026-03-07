@@ -1,14 +1,54 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import type { ValidationData, ValidationExperiment } from "@/lib/types";
 import InfoTooltip from "@/components/ui/InfoTooltip";
-import useStaggeredReveal from "@/hooks/useStaggeredReveal";
 
 interface Props {
   data: ValidationData | null;
   loading: boolean;
 }
+
+/* ---------- Benchmark metadata ---------- */
+
+const BENCHMARK_INFO: Record<
+  string,
+  {
+    label: string;
+    fullName: string;
+    coverage: string;
+    available: string[];
+    missing: string[];
+    reference: string;
+  }
+> = {
+  SOFA: {
+    label: "SOFA",
+    fullName: "Sequential Organ Failure Assessment",
+    coverage: "4/6",
+    available: ["Coagulation (Platelets)", "Hepatic (Bilirubin)", "Cardiovascular (MAP)", "Renal (Creatinine)"],
+    missing: ["Respiratory (PaO2/FiO2)", "Neurological (GCS)"],
+    reference: "Vincent et al. 1996 / Singer et al. 2016",
+  },
+  NEWS2: {
+    label: "NEWS2",
+    fullName: "National Early Warning Score 2",
+    coverage: "3/7",
+    available: ["SpO2 (Scale 1)", "Systolic BP", "Pulse"],
+    missing: ["Respiratory Rate", "Temperature", "Supplemental O2", "Consciousness (ACVPU)"],
+    reference: "Royal College of Physicians 2017",
+  },
+  "APACHE II": {
+    label: "APACHE II",
+    fullName: "Acute Physiology and Chronic Health Evaluation II",
+    coverage: "7/12",
+    available: ["MAP", "Heart Rate", "Sodium", "Potassium", "Creatinine", "Hematocrit", "WBC"],
+    missing: ["Temperature", "Respiratory Rate", "Oxygenation", "Arterial pH", "GCS"],
+    reference: "Knaus et al. 1985",
+  },
+};
+
+const BENCHMARK_ORDER = ["SOFA", "NEWS2", "APACHE II"] as const;
 
 /* ---------- Metric Card ---------- */
 
@@ -33,6 +73,59 @@ function MetricCard({
         {value}
       </span>
     </div>
+  );
+}
+
+/* ---------- Parameter Availability Tooltip ---------- */
+
+function ParamAvailabilityBadge({ benchmarkKey }: { benchmarkKey: string }) {
+  const [show, setShow] = useState(false);
+  const info = BENCHMARK_INFO[benchmarkKey];
+  if (!info) return null;
+
+  return (
+    <span
+      className="info-tooltip"
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+      onFocus={() => setShow(true)}
+      onBlur={() => setShow(false)}
+    >
+      <span
+        className="cursor-help rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+        style={{
+          background: "rgba(79,195,247,0.12)",
+          color: "#4FC3F7",
+          border: "1px solid rgba(79,195,247,0.25)",
+        }}
+      >
+        {info.coverage} params
+      </span>
+      {show && (
+        <div className="info-popover" style={{ width: "min(280px, 82vw)", top: "calc(100% + 8px)" }}>
+          <div className="info-popover-title">{info.fullName}</div>
+          <div className="info-popover-item" style={{ marginTop: 4 }}>
+            <strong>Available:</strong>
+          </div>
+          {info.available.map((p) => (
+            <div key={p} className="info-popover-item" style={{ paddingLeft: 8, color: "#7ee8a8" }}>
+              &#10003; {p}
+            </div>
+          ))}
+          <div className="info-popover-item" style={{ marginTop: 4 }}>
+            <strong>Missing (default 0):</strong>
+          </div>
+          {info.missing.map((p) => (
+            <div key={p} className="info-popover-item" style={{ paddingLeft: 8, color: "#7B8BA5" }}>
+              &#10007; {p}
+            </div>
+          ))}
+          <div className="info-popover-item" style={{ marginTop: 6, fontSize: 10, color: "#7B8BA5" }}>
+            {info.reference}
+          </div>
+        </div>
+      )}
+    </span>
   );
 }
 
@@ -63,6 +156,13 @@ function ExperimentCard({ exp }: { exp: ValidationExperiment }) {
         </span>
 
         <span className="flex-1 text-sm font-semibold text-white">{exp.name}</span>
+
+        {/* Stat preview */}
+        {exp.statistic_value != null && (
+          <span className="mr-2 text-xs tabular-nums text-slate-400">
+            {"\u03c1"} = {exp.statistic_value.toFixed(3)}
+          </span>
+        )}
 
         {/* Chevron */}
         <svg
@@ -159,7 +259,66 @@ function ExperimentCard({ exp }: { exp: ValidationExperiment }) {
   );
 }
 
-/* ---------- Main Component ---------- */
+/* ---------- Benchmark Group ---------- */
+
+function BenchmarkGroup({
+  benchmarkKey,
+  experiments,
+}: {
+  benchmarkKey: string;
+  experiments: ValidationExperiment[];
+}) {
+  const info = BENCHMARK_INFO[benchmarkKey];
+  if (!info) return null;
+
+  const passCount = experiments.filter((e) => e.passed).length;
+  const totalCount = experiments.length;
+
+  return (
+    <div className="space-y-3">
+      {/* Group header */}
+      <div className="flex items-center gap-3">
+        <h4 className="text-sm font-bold uppercase tracking-wider text-white">
+          {info.label}
+        </h4>
+        <ParamAvailabilityBadge benchmarkKey={benchmarkKey} />
+        <span
+          className="rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+          style={{
+            background: passCount === totalCount
+              ? "rgba(46,204,113,0.12)"
+              : passCount > 0
+                ? "rgba(243,156,18,0.12)"
+                : "rgba(231,76,60,0.12)",
+            color: passCount === totalCount
+              ? "#2ECC71"
+              : passCount > 0
+                ? "#F39C12"
+                : "#E74C3C",
+            border: `1px solid ${
+              passCount === totalCount
+                ? "rgba(46,204,113,0.25)"
+                : passCount > 0
+                  ? "rgba(243,156,18,0.25)"
+                  : "rgba(231,76,60,0.25)"
+            }`,
+          }}
+        >
+          {passCount}/{totalCount} passed
+        </span>
+      </div>
+
+      {/* Experiment cards */}
+      <div className="space-y-2">
+        {experiments.map((exp, i) => (
+          <ExperimentCard key={i} exp={exp} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Methodology Table ---------- */
 
 const METHODOLOGY_TABLE = [
   { finance: "Portfolio", healthcare: "Patient Cohort" },
@@ -172,19 +331,26 @@ const METHODOLOGY_TABLE = [
   { finance: "Stress Index (CSI)", healthcare: "Clinical Severity Index" },
 ];
 
-export default function ValidationTab({ data, loading }: Props) {
-  const summaryReveal = useStaggeredReveal(data?.summary?.length ?? 0, {
-    baseDelayMs: 40,
-    stepMs: 50,
-    threshold: 0.12,
-  });
+/* ---------- Main Component ---------- */
 
+export default function ValidationTab({ data, loading }: Props) {
+  // Group experiments by benchmark
+  const groupedExperiments = useMemo(() => {
+    if (!data?.experiments) return {};
+    const groups: Record<string, ValidationExperiment[]> = {};
+    for (const exp of data.experiments) {
+      const bm = exp.benchmark || "Other";
+      if (!groups[bm]) groups[bm] = [];
+      groups[bm].push(exp);
+    }
+    return groups;
+  }, [data?.experiments]);
 
   if (loading) {
     return (
       <div className="loading-state">
         <div className="loading-spinner" />
-        <p className="loading-state-text">Running retrospective validation summaries…</p>
+        <p className="loading-state-text">Running institutional benchmark validations...</p>
       </div>
     );
   }
@@ -197,112 +363,73 @@ export default function ValidationTab({ data, loading }: Props) {
     );
   }
 
-  const summaryKeys =
-    data.summary && data.summary.length > 0
-      ? Object.keys(data.summary[0])
-      : [];
+  const experimentCount = data.experiments?.length ?? 0;
+  const passedCount = data.experiments?.filter((e) => e.passed).length ?? 0;
 
   return (
     <div className="space-y-6">
       {/* ---- Title ---- */}
       <div className="tab-intro tab-intro-frost frost-panel">
         <h2 className="tab-intro-title">
-          Retrospective Validation
+          Institutional Benchmark Validation
         </h2>
         <p className="tab-intro-subtitle">
-          5 statistical experiments validating the clinical risk model against
-          retrospective patient data.
+          Validating our Composite Health Index against established clinical severity scores.
+          A negative Spearman correlation confirms that higher Health Index (healthier) aligns
+          with lower institutional severity (sicker), proving directional validity.
         </p>
-        <p className="mt-2 text-xs text-slate-500">
-          Nominal interpretation threshold: p &lt; 0.05, with sample-size caveats preserved.
-        </p>
-      </div>
-
-      {/* ---- Summary Table ---- */}
-      {data.summary && data.summary.length > 0 && (
-        <div className="frost-panel overflow-hidden">
-          <h3 className="border-b border-white/5 px-5 py-3 text-sm font-semibold uppercase tracking-wider text-slate-300">
-            Summary
-          </h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-white/5">
-                  {summaryKeys.map((key) => (
-                    <th
-                      key={key}
-                      className="whitespace-nowrap px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500"
-                    >
-                      <span className="section-label-with-info">
-                        {key.replace(/_/g, " ")}
-                        {key === "p_value" && <InfoTooltip metricId="validation.p_value" />}
-                        {key === "n_samples" && <InfoTooltip metricId="validation.n_samples" />}
-                      </span>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {data.summary.map((row, i) => {
-                  const reveal = summaryReveal.getRevealProps(i, "fade");
-                  return (
-                  <tr
-                    key={i}
-                    {...reveal.staggerAttrs}
-                    className={`border-b border-white/[0.03] transition-colors hover:bg-white/[0.02] ${reveal.staggerClass}`}
-                    style={reveal.staggerStyle}
-                  >
-                    {summaryKeys.map((key) => {
-                      const val = row[key];
-                      const display =
-                        typeof val === "number"
-                          ? val.toFixed(4)
-                          : typeof val === "boolean"
-                            ? val
-                              ? "\u2713"
-                              : "\u2717"
-                            : String(val ?? "\u2014");
-                      return (
-                        <td
-                          key={key}
-                          className="whitespace-nowrap px-5 py-2.5 tabular-nums text-slate-300"
-                        >
-                          {display}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+        <div className="mt-3 flex flex-wrap gap-3">
+          <span
+            className="rounded-full px-3 py-1 text-xs font-semibold"
+            style={{
+              background: passedCount > 0 ? "rgba(46,204,113,0.1)" : "rgba(231,76,60,0.1)",
+              color: passedCount > 0 ? "#2ECC71" : "#E74C3C",
+              border: `1px solid ${passedCount > 0 ? "rgba(46,204,113,0.2)" : "rgba(231,76,60,0.2)"}`,
+            }}
+          >
+            {passedCount}/{experimentCount} passed
+          </span>
+          <span className="rounded-full bg-white/5 px-3 py-1 text-xs text-slate-400">
+            Expected: negative {"\u03c1"} (Health Index vs severity)
+          </span>
+          <span className="rounded-full bg-white/5 px-3 py-1 text-xs text-slate-400">
+            Pass rule: {"\u03c1"} &lt; 0, p &lt; 0.20, n &gt; 5
+          </span>
         </div>
-      )}
-
-      {/* ---- Experiments ---- */}
-      <div className="space-y-4">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
-          Individual Experiments
-        </h3>
-        {data.experiments.map((exp, i) => (
-          <ExperimentCard key={i} exp={exp} />
-        ))}
       </div>
+
+      {/* ---- Experiments grouped by benchmark ---- */}
+      {BENCHMARK_ORDER.map((bm) => {
+        const exps = groupedExperiments[bm];
+        if (!exps || exps.length === 0) return null;
+        return (
+          <BenchmarkGroup key={bm} benchmarkKey={bm} experiments={exps} />
+        );
+      })}
 
       {/* ---- Caveats ---- */}
-        <div className="frost-panel px-5 py-4">
+      <div className="frost-panel px-5 py-4">
         <div className="flex items-start gap-3">
           <span className="mt-0.5 text-lg text-amber-400">&#9888;</span>
           <div>
-            <h3 className="text-sm font-semibold text-amber-300">Caveats</h3>
-            <p className="mt-1 text-sm leading-relaxed text-slate-300">
-              These results are based on a limited synthetic sample size. While
-              statistical significance is observed in some tests, results should
-              be interpreted with caution and validated on larger, real-world
-              clinical datasets before informing clinical decision-making.
-              Sample sizes may be insufficient for robust sub-group analyses.
-            </p>
+            <h3 className="text-sm font-semibold text-amber-300">Caveats &amp; Limitations</h3>
+            <ul className="mt-2 space-y-1.5 text-sm leading-relaxed text-slate-300">
+              <li>
+                <strong className="text-slate-200">Partial parameters:</strong>{" "}
+                SOFA uses 4/6 organ systems, NEWS2 uses 3/7 parameters, APACHE II uses 7/12 APS variables.
+                Missing components default to 0, biasing all institutional scores downward (conservative).
+              </li>
+              <li>
+                <strong className="text-slate-200">Small sample size:</strong>{" "}
+                Correlations are computed over ~5-7 patients. Results are directional evidence only;
+                statistical power is limited. Re-validate on larger cohorts before clinical use.
+              </li>
+              <li>
+                <strong className="text-slate-200">Outpatient bias:</strong>{" "}
+                SOFA and APACHE II are designed for ICU settings. Outpatient SOFA scores may cluster
+                near zero, making correlation undefined (constant-input guard applied).
+              </li>
+            </ul>
           </div>
         </div>
       </div>

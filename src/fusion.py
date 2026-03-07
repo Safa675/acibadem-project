@@ -40,6 +40,14 @@ WEIGHTS = {
     "med_changes": 0.15,
 }
 
+# Redistributed weights when NLP is skipped (ILAY_SKIP_NLP=1).
+# NLP's 30% is redistributed proportionally: 55/(55+15) = 78.6%, 15/(55+15) = 21.4%
+WEIGHTS_NO_NLP = {
+    "health_index": 0.786,
+    "nlp": 0.0,
+    "med_changes": 0.214,
+}
+
 # Risk tier boundaries for composite score
 COMPOSITE_TIERS = [
     (85, "AAA", "Excellent — stable health, positive prognosis"),
@@ -47,18 +55,18 @@ COMPOSITE_TIERS = [
     (55, "A", "Moderate — monitoring recommended"),
     (40, "BBB", "Below average — clinical review needed"),
     (25, "BB", "Elevated risk — active intervention recommended"),
-    (0,  "B/CCC", "High risk — urgent clinical attention"),
+    (0, "B/CCC", "High risk — urgent clinical attention"),
 ]
 
 
 @dataclass
 class CompositeRiskScore:
-    patient_id: int
-    composite_score: float       # [0, 100]
-    health_index_score: float    # [0, 100]
+    patient_id: str
+    composite_score: float  # [0, 100]
+    health_index_score: float  # [0, 100]
     nlp_score_normalized: float  # [0, 100] (from [-1, +1])
-    med_change_score: float      # [0, 100]
-    rating: str                  # AAA / AA / A / BBB / BB / B/CCC
+    med_change_score: float  # [0, 100]
+    rating: str  # AAA / AA / A / BBB / BB / B/CCC
     rating_label: str
     # Component weights used
     weights_used: dict
@@ -76,7 +84,9 @@ def _nlp_to_0_100(nlp_score: float) -> float:
 
 def _med_change_velocity_score(
     rec_df: pd.DataFrame,
-    patient_id: int,
+    patient_id: str,
+    *,
+    patient_recs: pd.DataFrame | None = None,
 ) -> float:
     """
     Compute medication change velocity score.
@@ -84,14 +94,24 @@ def _med_change_velocity_score(
     LOW velocity → HIGH score (stable).
 
     Score [0, 100]: 100 = no changes in the period, 0 = very high change rate.
+
+    Args:
+        rec_df: full prescriptions DataFrame (fallback if patient_recs not provided)
+        patient_id: patient identifier
+        patient_recs: pre-filtered prescription rows (avoids O(N) scan)
     """
-    patient_recs = rec_df[rec_df["patient_id"] == patient_id].copy()
+    if patient_recs is None:
+        patient_recs = rec_df[rec_df["patient_id"] == patient_id].copy()
     if patient_recs.empty:
         return 80.0  # default: no data → assume moderate stability
 
     # Use unique drug count as complexity proxy (not total rows, which
     # double-counts routine refills of standing prescriptions)
-    n_unique_drugs = patient_recs["drug_name"].nunique() if "drug_name" in patient_recs.columns else len(patient_recs)
+    n_unique_drugs = (
+        patient_recs["drug_name"].nunique()
+        if "drug_name" in patient_recs.columns
+        else len(patient_recs)
+    )
     if "date" not in patient_recs.columns:
         return 80.0  # no date column — assume moderate stability
     date_span = (patient_recs["date"].max() - patient_recs["date"].min()).days + 1
@@ -120,12 +140,14 @@ def _assign_rating(composite_score: float) -> tuple[str, str]:
 
 
 def compute_composite_score(
-    patient_id: int,
-    health_score: float,        # [0, 100] from HealthIndexBuilder
-    nlp_composite: float,       # [-1, +1] from NLPSignal
+    patient_id: str,
+    health_score: float,  # [0, 100] from HealthIndexBuilder
+    nlp_composite: float,  # [-1, +1] from NLPSignal
     rec_df: pd.DataFrame,
     ana_df: pd.DataFrame,
     weights: dict | None = None,
+    *,
+    patient_recs: pd.DataFrame | None = None,
 ) -> CompositeRiskScore:
     """
     Fuse all signals into a composite risk score.
@@ -137,6 +159,7 @@ def compute_composite_score(
         rec_df: prescriptions DataFrame (from load_recete)
         ana_df: patient visits DataFrame (from load_anadata)
         weights: optional weight override dict
+        patient_recs: pre-filtered prescription rows (avoids O(N) scan)
 
     Returns:
         CompositeRiskScore
@@ -149,7 +172,9 @@ def compute_composite_score(
         raise KeyError(f"Missing weight keys: {missing}")
 
     nlp_norm = _nlp_to_0_100(nlp_composite)
-    med_score = _med_change_velocity_score(rec_df, patient_id)
+    med_score = _med_change_velocity_score(
+        rec_df, patient_id, patient_recs=patient_recs
+    )
 
     composite = (
         w["health_index"] * health_score
@@ -173,24 +198,72 @@ def compute_composite_score(
 
 
 def compute_all_composites(
-    health_scores: dict[int, float],    # {patient_id: health_score}
-    nlp_scores: dict[int, float],       # {patient_id: nlp_composite}
+    health_scores: dict[str, float],  # {patient_id: health_score}
+    nlp_scores: dict[str, float],  # {patient_id: nlp_composite}
     rec_df: pd.DataFrame,
     ana_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Compute composite scores for all patients. Returns ranked DataFrame."""
+    """Compute composite scores for all patients. Returns ranked DataFrame.
+
+    Uses **per-patient** NLP weight selection:
+    - Patients with a real NLP score (non-zero) use full weights (55/30/15).
+    - Patients without NLP data (score == 0.0) use redistributed weights
+      (78.6% health, 0% NLP, 21.4% med) so NLP's missing contribution
+      doesn't drag scores toward 50.
+    """
+    import logging
+
+    _log = logging.getLogger(__name__)
+
+    # Count how many patients have real NLP scores
+    n_with_nlp = sum(1 for v in nlp_scores.values() if v != 0.0) if nlp_scores else 0
+    n_total = len(health_scores)
+    _log.info(
+        "Fusion: %d/%d patients have real NLP scores (%.1f%% coverage)",
+        n_with_nlp,
+        n_total,
+        (n_with_nlp / n_total * 100) if n_total else 0,
+    )
+
+    # Build index map once to avoid materializing per-patient DataFrame copies.
+    rec_group_indices: dict[str, np.ndarray] = {}
+    if not rec_df.empty and "patient_id" in rec_df.columns:
+        rec_group_indices = {
+            str(pid): idx
+            for pid, idx in rec_df.groupby("patient_id", sort=False).groups.items()
+        }
+    empty_rec = rec_df.iloc[0:0]
+
     rows = []
     for pid in health_scores:
         h = health_scores[pid]
         n = nlp_scores.get(pid, 0.0)
-        result = compute_composite_score(pid, h, n, rec_df, ana_df)
-        rows.append({
-            "patient_id": pid,
-            "composite_score": result.composite_score,
-            "health_index_score": result.health_index_score,
-            "nlp_score": result.nlp_score_normalized,
-            "med_change_score": result.med_change_score,
-            "rating": result.rating,
-            "rating_label": result.rating_label,
-        })
-    return pd.DataFrame(rows).sort_values("composite_score", ascending=False).reset_index(drop=True)
+        # Per-patient weight selection: real NLP → full weights, missing → redistributed
+        weights = None if n != 0.0 else WEIGHTS_NO_NLP
+        rec_idx = rec_group_indices.get(str(pid))
+        patient_recs = rec_df.iloc[rec_idx] if rec_idx is not None else empty_rec
+        result = compute_composite_score(
+            pid,
+            h,
+            n,
+            rec_df,
+            ana_df,
+            weights=weights,
+            patient_recs=patient_recs,
+        )
+        rows.append(
+            {
+                "patient_id": pid,
+                "composite_score": result.composite_score,
+                "health_index_score": result.health_index_score,
+                "nlp_score": result.nlp_score_normalized,
+                "med_change_score": result.med_change_score,
+                "rating": result.rating,
+                "rating_label": result.rating_label,
+            }
+        )
+    return (
+        pd.DataFrame(rows)
+        .sort_values("composite_score", ascending=False)
+        .reset_index(drop=True)
+    )

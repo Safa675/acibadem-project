@@ -32,6 +32,7 @@ frontend/*.tsbuildinfo
 
 # Data
 *.ods
+ACUHIT 2/
 
 # Logs
 logs/
@@ -41,8 +42,7 @@ logs/
 node_modules/
 package-lock.json
 
-# Credentials / tunnels
-ngroq.txt
+
 
 # Tasks
 tasks

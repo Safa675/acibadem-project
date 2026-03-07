@@ -26,12 +26,16 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
     range: "[0, 100]",
     source: "HealthIndexBuilder (src/health_index.py)",
   },
-  "cohort.n_high_risk": {
-    id: "cohort.n_high_risk",
-    title: "High-Risk Patients",
-    definition: "Count of patients meeting the configured high-risk composite criterion.",
-    formula: "count(high_risk_condition == true)",
-    interpretation: "Represents review-queue pressure for proactive intervention.",
+  "cohort.mean_eci": {
+    id: "cohort.mean_eci",
+    title: "Mean ECI Score",
+    definition:
+      "Arithmetic mean of patient-level Expected Cost Intensity scores across the active cohort.",
+    formula: "mean = (1/n) * sum(eci_score_i)",
+    interpretation:
+      "Higher values indicate greater average expected cost intensity across the cohort.",
+    range: "[0, 100]",
+    source: "ECI model (src/eci.py)",
   },
   "cohort.n_critical": {
     id: "cohort.n_critical",
@@ -52,7 +56,7 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
     id: "cohort.scatter",
     title: "Cohort Risk Scatter",
     definition: "Patient-level distribution of health index versus NLP score.",
-    formula: "x = health_index_score, y = nlp_score, radius ~ csi_score",
+    formula: "x = health_index_score, y = nlp_score, radius ~ eci_score",
     interpretation:
       "Upper-right indicates stronger multimodal profile; larger points imply greater severity burden.",
     range: "x,y in [0, 100]",
@@ -64,6 +68,7 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
     formula: "histogram(rating)",
     interpretation:
       "Mass shift toward BB/B-CCC indicates degradation of cohort risk quality.",
+    source: "Composite tiers: AAA 85-100, AA 70-84, A 55-69, BBB 40-54, BB 25-39, B/CCC 0-24",
   },
   "cohort.regime_distribution": {
     id: "cohort.regime_distribution",
@@ -89,6 +94,16 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
     interpretation: "Conservative downside floor under current return-regime assumption.",
     range: "[0, 100]",
   },
+  "cohort.var.risk_tier": {
+    id: "cohort.var.risk_tier",
+    title: "Risk Tier",
+    definition:
+      "Categorical deterioration risk label based on signed Health VaR %, where signed VaR % = ((p05 - current_score) / max(current_score,1)) * 100.",
+    formula:
+      "Tier thresholds (signed VaR %): RED <= -10 | ORANGE (-10, 0) | YELLOW [0, 5] | GREEN > 5",
+    interpretation:
+      "Table color guide: Downside VaR % -> 0=#2ECC71, >0-5=#A3E635, >5-15=#FACC15, >15-35=#FB923C, >35=#EF4444. VaR Floor Score -> 0-20=#DC2626, >20-40=#F97316, >40-60=#FACC15, >60-80=#84CC16, >80-100=#22C55E.",
+  },
   "patient.summary.composite_score": {
     id: "patient.summary.composite_score",
     title: "Composite Score",
@@ -105,7 +120,7 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
     definition: "Current state in the 2x2 trend-volatility regime model.",
     formula: "state = f(health >= MA3, volatility_percentile >= 60)",
     interpretation:
-      "Critical implies negative trend with elevated volatility relative to patient baseline.",
+      "Critical implies negative trend with elevated volatility relative to patient baseline. If shown as Insufficient Data, there are not enough sequential observations to compute moving average and rolling volatility features, so regime classification is unavailable.",
   },
   "patient.summary.downside_var_pct": {
     id: "patient.summary.downside_var_pct",
@@ -114,15 +129,15 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
     formula: "VaR% = ((p05 - current_score) / max(current_score,1)) * 100",
     interpretation: "Lower values represent greater near-term deterioration exposure.",
   },
-  "patient.summary.csi_score": {
-    id: "patient.summary.csi_score",
-    title: "CSI Score",
-    definition: "Clinical Severity Index combining six normalized burden components.",
+  "patient.summary.eci_score": {
+    id: "patient.summary.eci_score",
+    title: "ECI Score",
+    definition: "Expected Cost Intensity — percentile-normalized composite of four equal-weight cost drivers.",
     formula:
-      "0.25*trend + 0.20*volatility + 0.20*critical_fraction + 0.15*nlp + 0.10*rx + 0.10*comorbidity",
-    interpretation: "Higher CSI indicates higher expected utilization and severity burden.",
+      "0.25*visit_intensity + 0.25*med_burden + 0.25*diagnostic_intensity + 0.25*trajectory_cost",
+    interpretation: "Higher ECI indicates higher expected cost intensity. Rated AAA (lowest) to B/CCC (highest).",
     range: "[0, 100]",
-    source: "Outcome model (src/outcomes.py)",
+    source: "ECI model (src/eci.py)",
   },
   "patient.regime.timeline": {
     id: "patient.regime.timeline",
@@ -158,27 +173,27 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
     interpretation: "Magnitude reflects model confidence-weighted directional strength.",
     range: "[-1, +1]",
   },
-  "outcome.csi.gauge": {
-    id: "outcome.csi.gauge",
-    title: "CSI Gauge",
-    definition: "Semicircular visual encoding of CSI magnitude and severity tier.",
+  "outcome.eci.gauge": {
+    id: "outcome.eci.gauge",
+    title: "ECI Gauge",
+    definition: "Semicircular visual encoding of Expected Cost Intensity score and rating.",
     formula: "needle_angle = linear_map(score in [0,100], pi to 0)",
-    interpretation: "Higher angular displacement toward red indicates greater severity burden.",
+    interpretation: "Higher angular displacement toward red indicates greater expected cost intensity.",
   },
   "outcome.feature_decomposition": {
     id: "outcome.feature_decomposition",
-    title: "CSI Feature Decomposition",
-    definition: "Component-wise weighted contribution to total CSI score.",
-    formula: "contribution_i = normalized_component_i * component_weight_i",
+    title: "ECI Component Breakdown",
+    definition: "Four equal-weight components contributing to the total ECI score.",
+    formula: "contribution_i = percentile_rank(component_i) * 0.25",
     interpretation:
-      "Largest bars identify dominant burden drivers for clinical prioritization.",
+      "Largest bars identify dominant cost drivers for resource planning.",
   },
   "outcome.cohort_ranking": {
     id: "outcome.cohort_ranking",
-    title: "CSI Cohort Ranking",
-    definition: "Ordering of cohort patients by CSI score magnitude.",
-    formula: "sort_desc(csi_score)",
-    interpretation: "Selected patient position contextualizes relative burden percentile.",
+    title: "ECI Cohort Ranking",
+    definition: "Ordering of cohort patients by ECI score magnitude.",
+    formula: "sort_asc(eci_score)",
+    interpretation: "Selected patient position contextualizes relative cost percentile.",
   },
   "outcome.spearman_r": {
     id: "outcome.spearman_r",
@@ -188,6 +203,46 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
     interpretation:
       "Sign indicates direction; absolute value indicates monotonic association strength.",
     range: "[-1, +1]",
+  },
+  "explorer.filter.age_range": {
+    id: "explorer.filter.age_range",
+    title: "Age Range Filter",
+    definition: "Patient selector constraint based on age bounds.",
+    formula: "include if age >= min_age and age <= max_age",
+    interpretation:
+      "Set either bound alone for one-sided filtering, or set both for a closed interval.",
+  },
+  "explorer.filter.weight_range": {
+    id: "explorer.filter.weight_range",
+    title: "Weight Range Filter",
+    definition: "Patient selector constraint based on latest known body weight (kg).",
+    formula: "include if weight_kg >= min_weight and weight_kg <= max_weight",
+    interpretation:
+      "Uses each patient’s latest available weight; if one bound is blank it is ignored.",
+  },
+  "explorer.filter.gender": {
+    id: "explorer.filter.gender",
+    title: "Gender Filter",
+    definition: "Filters patients by normalized sex code from patient metadata.",
+    formula: "Female = K, Male = E, All = no gender constraint",
+    interpretation:
+      "Use All to include every patient regardless of available sex metadata.",
+  },
+  "explorer.filter.doctor_code": {
+    id: "explorer.filter.doctor_code",
+    title: "Doctor Filter",
+    definition: "Filters patients by latest visit doctor code (`DOCTOR_CODE`).",
+    formula: "include if patient.doctor_code == selected_code",
+    interpretation:
+      "Select All to disable this filter and include all doctor assignments.",
+  },
+  "explorer.filter.comorbidities": {
+    id: "explorer.filter.comorbidities",
+    title: "Comorbidity Conditions Filter",
+    definition: "Condition-specific filter using six modeled comorbidity flags.",
+    formula: "include if patient contains ALL selected condition keys",
+    interpretation:
+      "When multiple conditions are checked, only patients matching every selected condition remain.",
   },
   "validation.p_value": {
     id: "validation.p_value",

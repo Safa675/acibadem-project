@@ -1,42 +1,37 @@
 """
 validation.py
-Retrospective Validation Experiments for HealthQuant Monitor.
+Institutional benchmark validation for the Composite Health Index.
 
-Five validation experiments using only available data (no doctor input needed):
+This module validates our Health Index against three established clinical severity scores:
+  - SOFA (Sequential Organ Failure Assessment)
+  - NEWS2 (National Early Warning Score 2)
+  - APACHE II (Acute Physiology and Chronic Health Evaluation II)
 
-  Experiment 1: Regime Severity → Prescription Intensity
-    H0: Mean prescription velocity ≤ 5 Rx/month when regime ≠ Critical
-    H1: Prescription velocity is higher for Critical-state patients
-    Test: Spearman rank correlation (regime_criticality vs rx_velocity)
+For each benchmark, we run 3 Spearman rank-correlation experiments:
+  1) Mean Health Index vs Mean benchmark score
+  2) Mean Health Index vs Max benchmark score
+  3) Last Health Index vs Last benchmark score
 
-  Experiment 2: Health VaR Tier → Visit Frequency
-    H0: VaR risk score is uncorrelated with total visit count
-    H1: Negative VaR (higher risk) correlates with more visits
-    Test: Spearman rank correlation (var_pct vs total_visits)
+Expected direction: Negative (higher Health Index = healthier; higher severity score = sicker).
 
-  Experiment 3: Mean NLP Signal → Total Visits
-    H0: Mean NLP composite is uncorrelated with total visits
-    H1: Deterioration language predicts higher utilization
-    Test: Spearman rank correlation
-
-  Experiment 4: Lab Volatility → Critical Episodes
-    H0: High lab volatility (health score std) is unrelated to regime severity
-    H1: Higher volatility → more Critical state observations
-    Test: Spearman rank correlation
-
-  Experiment 5: CSI Score Calibration
-    Validate that CSI rankings line up with actual outcomes (total_visits):
-    Higher CSI predicts higher mean visits.
-    Test: Spearman rank correlation and Mann-Whitney U for tiers
+Data availability:
+  - SOFA:     4/6 organ systems  (Coagulation, Liver, Cardiovascular, Renal)
+  - NEWS2:    3/7 parameters     (SpO2, SBP, Pulse)
+  - APACHE II: 7/12 APS params  (MAP, HR, Na, K, Creatinine, Hematocrit, WBC)
+  - Missing parameters default to 0 (conservative lower-bound).
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Optional
+
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass, field
-from scipy.stats import spearmanr, mannwhitneyu
-from typing import Optional
+from scipy.stats import spearmanr
+
+
+# ── Data structures ──────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -49,8 +44,12 @@ class ValidationResult:
     n_samples: int
     conclusion: str
     clinical_meaning: str
-    passed: bool  # True = evidence supports hypothesis
+    passed: bool
+    benchmark: str = ""  # "SOFA", "NEWS2", "APACHE II"
     details: dict = field(default_factory=dict)
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 
 def _format_significance(p: Optional[float]) -> str:
@@ -58,388 +57,333 @@ def _format_significance(p: Optional[float]) -> str:
         return "N/A"
     if p < 0.001:
         return "p < 0.001 ***"
-    elif p < 0.01:
+    if p < 0.01:
         return f"p = {p:.3f} **"
-    elif p < 0.05:
+    if p < 0.05:
         return f"p = {p:.3f} *"
-    elif p < 0.10:
+    if p < 0.10:
         return f"p = {p:.3f} (trend)"
+    return f"p = {p:.3f} (n.s.)"
+
+
+def _build_unavailable_result(
+    experiment_name: str,
+    hypothesis: str,
+    clinical_meaning: str,
+    conclusion: str,
+    benchmark: str = "",
+    n_samples: int = 0,
+    details: Optional[dict] = None,
+) -> ValidationResult:
+    return ValidationResult(
+        experiment_name=experiment_name,
+        hypothesis=hypothesis,
+        statistic_name="Spearman \u03c1",
+        statistic_value=float("nan"),
+        p_value=None,
+        n_samples=n_samples,
+        conclusion=conclusion,
+        clinical_meaning=clinical_meaning,
+        passed=False,
+        benchmark=benchmark,
+        details=details or {},
+    )
+
+
+# ── Core experiment runner ───────────────────────────────────────────────────
+
+
+def _run_negative_correlation_experiment(
+    merged_df: pd.DataFrame,
+    hi_col: str,
+    institutional_col: str,
+    experiment_name: str,
+    benchmark: str,
+) -> ValidationResult:
+    """
+    Run a Spearman correlation experiment expecting negative correlation
+    between Health Index (higher = healthier) and an institutional severity
+    score (higher = sicker).
+    """
+    hypothesis = (
+        f"Higher Health Index should correlate with lower {benchmark} severity "
+        "(negative Spearman correlation)."
+    )
+    clinical_meaning = (
+        f"Negative association between Health Index and {benchmark} indicates our "
+        "composite score is directionally aligned with an established clinical "
+        "severity scale."
+    )
+
+    if merged_df is None or merged_df.empty:
+        return _build_unavailable_result(
+            experiment_name=experiment_name,
+            hypothesis=hypothesis,
+            clinical_meaning=clinical_meaning,
+            conclusion="No merged patient data available for this benchmark.",
+            benchmark=benchmark,
+            details={"hi_col": hi_col, "institutional_col": institutional_col},
+        )
+
+    if hi_col not in merged_df.columns or institutional_col not in merged_df.columns:
+        missing = []
+        if hi_col not in merged_df.columns:
+            missing.append(hi_col)
+        if institutional_col not in merged_df.columns:
+            missing.append(institutional_col)
+        return _build_unavailable_result(
+            experiment_name=experiment_name,
+            hypothesis=hypothesis,
+            clinical_meaning=clinical_meaning,
+            conclusion=f"Required columns not found: {', '.join(missing)}.",
+            benchmark=benchmark,
+            details={"hi_col": hi_col, "institutional_col": institutional_col},
+        )
+
+    valid = merged_df[[hi_col, institutional_col]].dropna()
+    n = len(valid)
+    if n < 3:
+        return _build_unavailable_result(
+            experiment_name=experiment_name,
+            hypothesis=hypothesis,
+            clinical_meaning=clinical_meaning,
+            conclusion=f"Insufficient data for correlation (n={n}, need at least 3).",
+            benchmark=benchmark,
+            n_samples=n,
+            details={
+                "hi_col": hi_col,
+                "institutional_col": institutional_col,
+                "minimum_required_n": 3,
+                "reason": "insufficient_samples",
+            },
+        )
+
+    x = valid[hi_col]
+    y = valid[institutional_col]
+    if x.nunique() <= 1 or y.nunique() <= 1:
+        return _build_unavailable_result(
+            experiment_name=experiment_name,
+            hypothesis=hypothesis,
+            clinical_meaning=clinical_meaning,
+            conclusion=(
+                "Non-testable: one input is constant across patients "
+                "(correlation undefined)."
+            ),
+            benchmark=benchmark,
+            n_samples=n,
+            details={
+                "hi_col": hi_col,
+                "institutional_col": institutional_col,
+                "reason": "constant_input",
+                "hi_unique": int(x.nunique()),
+                "institutional_unique": int(y.nunique()),
+            },
+        )
+
+    r, p = spearmanr(x, y)
+    if np.isnan(r) or np.isnan(p):
+        return _build_unavailable_result(
+            experiment_name=experiment_name,
+            hypothesis=hypothesis,
+            clinical_meaning=clinical_meaning,
+            conclusion="Correlation undefined due to numerical/statistical edge case.",
+            benchmark=benchmark,
+            n_samples=n,
+            details={
+                "hi_col": hi_col,
+                "institutional_col": institutional_col,
+                "reason": "undefined_statistic",
+            },
+        )
+
+    passed = bool(r < 0 and p < 0.20 and n > 5)
+    if passed:
+        verdict = "Evidence supports expected negative alignment."
+    elif n <= 5 and r < 0 and p < 0.20:
+        verdict = "Exploratory negative trend (n \u2264 5 guard prevents pass)."
+    elif r >= 0:
+        verdict = "Direction mismatch (correlation is not negative)."
     else:
-        return f"p = {p:.3f} (n.s.)"
-
-
-# ---------------------------------------------------------------------------
-# Experiment 1: Regime Criticality → Prescription Intensity
-# ---------------------------------------------------------------------------
-
-def experiment1_regime_vs_prescriptions(
-    profiles_df: pd.DataFrame,
-) -> ValidationResult:
-    """
-    Test whether patients with higher critical_fraction have higher prescription velocity.
-    Spearman rank correlation: critical_fraction vs prescription_velocity.
-    """
-    valid = profiles_df[["critical_fraction", "prescription_velocity"]].dropna()
-    n = len(valid)
-
-    if n < 3:
-        return ValidationResult(
-            experiment_name="Regime Severity → Prescription Intensity",
-            hypothesis="Critical regime patients require more medications",
-            statistic_name="Spearman ρ",
-            statistic_value=float("nan"),
-            p_value=None,
-            n_samples=n,
-            conclusion="Insufficient data (n < 3)",
-            clinical_meaning="N/A",
-            passed=False,
-            details={"note": "Need ≥3 patients with both regime and prescription data"},
-        )
-
-    r, p = spearmanr(valid["critical_fraction"], valid["prescription_velocity"])
-    direction = "positive" if r > 0 else "negative"
-    
-    # Require p < 0.20 for passage. For tiny n, label as exploratory 
-    passed = r > 0 and p < 0.20 if not np.isnan(p) else False
-    
-    if n <= 5:
-        passed = False  # strictly don't pass if n<=5, call it exploratory
+        verdict = "Weak evidence for negative alignment."
 
     conclusion = (
-        f"Spearman ρ={r:.3f} ({_format_significance(p)}). "
-        f"{'Supports' if passed else ('Exploratory trend' if n<=5 and r>0 else 'Does not support')} hypothesis."
+        f"Spearman \u03c1={r:.3f} ({_format_significance(p)}), n={n}. {verdict}"
     )
 
     return ValidationResult(
-        experiment_name="Regime Severity → Prescription Intensity",
-        hypothesis="Critical regime episodes correlate with higher prescription velocity",
-        statistic_name="Spearman ρ",
+        experiment_name=experiment_name,
+        hypothesis=hypothesis,
+        statistic_name="Spearman \u03c1",
         statistic_value=round(float(r), 3),
         p_value=round(float(p), 3),
         n_samples=n,
         conclusion=conclusion,
-        clinical_meaning=(
-            "If Critical state correlates with Rx velocity, the regime classifier "
-            "captures clinically meaningful deterioration — not just statistical noise."
-        ),
+        clinical_meaning=clinical_meaning,
         passed=passed,
+        benchmark=benchmark,
         details={
-            "direction": direction,
-            "critical_fraction_range": [
-                round(float(valid["critical_fraction"].min()), 3),
-                round(float(valid["critical_fraction"].max()), 3),
+            "hi_col": hi_col,
+            "institutional_col": institutional_col,
+            "expected_direction": "negative",
+            "hi_range": [
+                round(float(x.min()), 2),
+                round(float(x.max()), 2),
             ],
-            "rx_velocity_range": [
-                round(float(valid["prescription_velocity"].min()), 2),
-                round(float(valid["prescription_velocity"].max()), 2),
+            "institutional_range": [
+                round(float(y.min()), 2),
+                round(float(y.max()), 2),
             ],
         },
     )
 
 
-# ---------------------------------------------------------------------------
-# Experiment 2: Health VaR Tier → Visit Frequency
-# ---------------------------------------------------------------------------
+# ── Institutional benchmark experiments ──────────────────────────────────────
 
-def experiment2_var_tier_vs_visits(
-    profiles_df: pd.DataFrame,
-    var_summary: pd.DataFrame,
-) -> ValidationResult:
-    """
-    Test whether RED VaR tier patients have higher total_visits.
-    Requires merging profiles with VaR summary on patient_id.
-    """
-    if var_summary is None or var_summary.empty:
-        return ValidationResult(
-            experiment_name="Health VaR Tier → Visit Frequency",
-            hypothesis="RED VaR patients have higher visit counts",
-            statistic_name="Mann-Whitney U",
-            statistic_value=float("nan"),
-            p_value=None,
-            n_samples=0,
-            conclusion="VaR summary not available",
-            clinical_meaning="N/A",
-            passed=False,
-        )
-
-    n_total_profiles = len(profiles_df)
-    merged_all = profiles_df.merge(
-        var_summary[["patient_id", "risk_tier", "var_pct"]],
-        on="patient_id", how="inner"
-    )
-    n_after_merge = len(merged_all)
-    merged = merged_all.dropna(subset=["total_visits"])
-    
-    n_dropped_merge = n_total_profiles - n_after_merge
-    n_dropped_na = n_after_merge - len(merged)
-
-    n = len(merged)
-    if n < 3:
-        return ValidationResult(
-            experiment_name="Health VaR Tier → Visit Frequency",
-            hypothesis="RED VaR patients have higher visit counts",
-            statistic_name="Spearman ρ (var_pct vs total_visits)",
-            statistic_value=float("nan"),
-            p_value=None,
-            n_samples=n,
-            conclusion="Insufficient data",
-            clinical_meaning="N/A",
-            passed=False,
-        )
-
-    # Use var_pct (negative = more risk) → expect negative correlation with visits
-    r, p = spearmanr(merged["var_pct"], merged["total_visits"])
-    
-    passed = r < 0 and p < 0.20 if not np.isnan(p) else False
-    if n <= 5: passed = False
-
-    conclusion = (
-        f"Spearman ρ(VaR%, total_visits)={r:.3f} ({_format_significance(p)}). "
-        f"{'Evidence supports hypothesis' if passed else ('Exploratory finding' if n<=5 and r<0 else 'Weak evidence')}."
-    )
-
-    return ValidationResult(
-        experiment_name="Health VaR Tier → Visit Frequency",
-        hypothesis="Patients with negative Health VaR (higher risk) have more visits",
-        statistic_name="Spearman ρ",
-        statistic_value=round(float(r), 3),
-        p_value=round(float(p), 3),
-        n_samples=n,
-        conclusion=conclusion,
-        clinical_meaning=(
-            "If Health VaR predicts visit frequency, it has validated predictive power "
-            "for healthcare utilization — enabling proactive resource planning."
-        ),
-        passed=passed,
-        details={"var_pct_mean": round(float(merged["var_pct"].mean()), 2),
-                 "n_dropped_merge": n_dropped_merge,
-                 "n_dropped_na": n_dropped_na},
-    )
+_BENCHMARK_SPECS = [
+    {
+        "benchmark": "SOFA",
+        "mean_col": "mean_sofa",
+        "max_col": "max_sofa",
+        "last_col": "last_sofa",
+        "full_name": "SOFA (Sequential Organ Failure Assessment)",
+        "coverage": "4/6 organ systems",
+    },
+    {
+        "benchmark": "NEWS2",
+        "mean_col": "mean_news2",
+        "max_col": "max_news2",
+        "last_col": "last_news2",
+        "full_name": "NEWS2 (National Early Warning Score 2)",
+        "coverage": "3/7 parameters",
+    },
+    {
+        "benchmark": "APACHE II",
+        "mean_col": "mean_apache2",
+        "max_col": "max_apache2",
+        "last_col": "last_apache2",
+        "full_name": "APACHE II (Acute Physiology and Chronic Health Evaluation)",
+        "coverage": "7/12 APS parameters",
+    },
+]
 
 
-# ---------------------------------------------------------------------------
-# Experiment 3: First-Visit NLP Signal → Total Visits
-# ---------------------------------------------------------------------------
-
-def experiment3_nlp_vs_outcomes(
-    profiles_df: pd.DataFrame,
-) -> ValidationResult:
-    """
-    Test whether mean NLP composite predicts total visits.
-    Negative NLP (deterioration language) → more visits expected.
-    """
-    valid = profiles_df[["mean_nlp_composite", "total_visits"]].dropna()
-    n = len(valid)
-
-    if n < 3:
-        return ValidationResult(
-            experiment_name="Mean Clinical NLP Signal → Healthcare Utilization",
-            hypothesis="Negative mean NLP language correlates with higher visit counts",
-            statistic_name="Spearman ρ",
-            statistic_value=float("nan"),
-            p_value=None,
-            n_samples=n,
-            conclusion="Insufficient data",
-            clinical_meaning="N/A",
-            passed=False,
-        )
-
-    r, p = spearmanr(valid["mean_nlp_composite"], valid["total_visits"])
-    
-    passed = r < 0 and p < 0.20 if not np.isnan(p) else False
-    if n <= 5: passed = False
-
-    conclusion = (
-        f"Spearman ρ(NLP, total_visits)={r:.3f} ({_format_significance(p)}). "
-        f"{'Supports hypothesis' if passed else ('Exploratory trend' if n<=5 and r<0 else 'Weakly correlated')}."
-    )
-
-    return ValidationResult(
-        experiment_name="Mean Clinical NLP Signal → Healthcare Utilization",
-        hypothesis="Deterioration language in clinical notes predicts higher visit count",
-        statistic_name="Spearman ρ",
-        statistic_value=round(float(r), 3),
-        p_value=round(float(p), 3),
-        n_samples=n,
-        conclusion=conclusion,
-        clinical_meaning=(
-            "Turkish free-text NLP on ÖYKÜ/Muayene Notu providing predictive signal "
-            "validates the clinical text analysis component of the system."
-        ),
-        passed=passed,
-        details={
-            "nlp_mean": round(float(valid["mean_nlp_composite"].mean()), 3),
-            "nlp_std": round(float(valid["mean_nlp_composite"].std()), 3),
-        },
-    )
-
-
-# ---------------------------------------------------------------------------
-# Experiment 4: Lab Volatility → Regime Severity
-# ---------------------------------------------------------------------------
-
-def experiment4_volatility_vs_critical(
-    profiles_df: pd.DataFrame,
-) -> ValidationResult:
-    """
-    Test whether lab volatility (health_score_volatility) predicts critical_fraction.
-    This validates the regime classifier's volatility dimension.
-    """
-    valid = profiles_df[["health_score_volatility", "critical_fraction"]].dropna()
-    n = len(valid)
-
-    if n < 3:
-        return ValidationResult(
-            experiment_name="Lab Volatility → Critical State Fraction",
-            hypothesis="Higher lab volatility → more time in Critical state",
-            statistic_name="Spearman ρ",
-            statistic_value=float("nan"),
-            p_value=None,
-            n_samples=n,
-            conclusion="Insufficient data",
-            clinical_meaning="N/A",
-            passed=False,
-        )
-
-    r, p = spearmanr(valid["health_score_volatility"], valid["critical_fraction"])
-    
-    passed = r > 0 and p < 0.20 if not np.isnan(p) else False
-    if n <= 5: passed = False
-
-    conclusion = (
-        f"Spearman ρ(vol, critical_fraction)={r:.3f} ({_format_significance(p)}). "
-        f"{'Supports hypothesis' if passed else ('Exploratory link' if n<=5 and r>0 else 'Weak link')}."
-    )
-
-    return ValidationResult(
-        experiment_name="Lab Volatility → Critical State Fraction",
-        hypothesis="Higher health score volatility predicts more time in Critical regime state",
-        statistic_name="Spearman ρ",
-        statistic_value=round(float(r), 3),
-        p_value=round(float(p), 3),
-        n_samples=n,
-        conclusion=conclusion,
-        clinical_meaning=(
-            "If volatility correlates with Critical state, the 2D regime classifier "
-            "(trend × volatility) has internal consistency — the dimensions are not redundant."
-        ),
-        passed=passed,
-        details={
-            "vol_range": [
-                round(float(valid["health_score_volatility"].min()), 2),
-                round(float(valid["health_score_volatility"].max()), 2),
-            ],
-        },
-    )
-
-
-# ---------------------------------------------------------------------------
-# Experiment 5: CSI Calibration (tier vs outcome)
-# ---------------------------------------------------------------------------
-
-def experiment5_csi_calibration(
-    profiles_df: pd.DataFrame,
-) -> ValidationResult:
-    """
-    Validate CSI score ordering vs total_visits using Spearman correlation.
-    Higher CSI should predict more visits.
-    """
-    valid = profiles_df[["csi_score", "total_visits"]].dropna()
-    n = len(valid)
-
-    if n < 3:
-        return ValidationResult(
-            experiment_name="CSI Score Calibration vs Healthcare Utilization",
-            hypothesis="Higher CSI score predicts more total visits",
-            statistic_name="Spearman ρ",
-            statistic_value=float("nan"),
-            p_value=None,
-            n_samples=n,
-            conclusion="Insufficient data",
-            clinical_meaning="N/A",
-            passed=False,
-        )
-
-    r, p = spearmanr(valid["csi_score"], valid["total_visits"])
-    
-    passed = r > 0 and p < 0.20 if not np.isnan(p) else False
-    if n <= 5: passed = False
-
-    conclusion = (
-        f"Spearman ρ(CSI, total_visits)={r:.3f} ({_format_significance(p)}). "
-        f"{'CSI ordering validated.' if passed else ('Exploratory validation' if n<=5 and r>0 else 'CSI ordering weak')}."
-    )
-
-    # Tier comparison avoiding janky index locs
-    tier_stats = {}
-    if "csi_tier" in profiles_df.columns:
-        valid_tiers = profiles_df[["csi_score", "csi_tier", "total_visits"]].dropna()
-        high = valid_tiers["csi_tier"].isin(["HIGH", "CRITICAL"])
-        high_visits = valid_tiers.loc[high, "total_visits"]
-        low_visits = valid_tiers.loc[~high, "total_visits"]
-        
-        if not high_visits.empty and not low_visits.empty:
-            ratio = round(float(high_visits.mean()) / max(float(low_visits.mean()), 1), 2)
-            tier_stats = {
-                "high_csi_mean_visits": round(float(high_visits.mean()), 1),
-                "low_csi_mean_visits": round(float(low_visits.mean()), 1),
-                "ratio": ratio,
-            }
-            # Mann-Whitney U test
-            try:
-                u, p_u = mannwhitneyu(high_visits, low_visits, alternative="greater")
-                tier_stats["mwu_p_value"] = round(float(p_u), 3)
-                tier_stats["mwu_significant"] = bool(p_u < 0.20)
-            except Exception:
-                tier_stats["mwu_p_value"] = None
-
-    return ValidationResult(
-        experiment_name="CSI Score Calibration vs Healthcare Utilization",
-        hypothesis="Higher Clinical Severity Index score predicts more total healthcare visits",
-        statistic_name="Spearman ρ",
-        statistic_value=round(float(r), 3),
-        p_value=round(float(p), 3),
-        n_samples=n,
-        conclusion=conclusion,
-        clinical_meaning=(
-            "CSI calibration against actual utilization validates the composite index "
-            "as a clinically meaningful triage and resource-planning tool."
-        ),
-        passed=passed,
-        details=tier_stats,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Run all experiments
-# ---------------------------------------------------------------------------
-
-def run_all_validations(
-    profiles_df: pd.DataFrame,
-    var_summary: pd.DataFrame | None = None,
+def _run_institutional_benchmarks(
+    hi_df: pd.DataFrame | None,
+    sofa_df: pd.DataFrame | None,
+    news2_df: pd.DataFrame | None,
+    apache2_df: pd.DataFrame | None,
 ) -> list[ValidationResult]:
-    """Run all 5 validation experiments and return results."""
-    results = [
-        experiment1_regime_vs_prescriptions(profiles_df),
-        experiment2_var_tier_vs_visits(profiles_df, var_summary),
-        experiment3_nlp_vs_outcomes(profiles_df),
-        experiment4_volatility_vs_critical(profiles_df),
-        experiment5_csi_calibration(profiles_df),
-    ]
+    """
+    Run 9 Spearman correlation experiments (3 per benchmark) comparing
+    Health Index against SOFA, NEWS2, and APACHE II severity scores.
+    """
+    results: list[ValidationResult] = []
+
+    score_dfs = {
+        "SOFA": sofa_df,
+        "NEWS2": news2_df,
+        "APACHE II": apache2_df,
+    }
+
+    for spec in _BENCHMARK_SPECS:
+        bm = spec["benchmark"]
+        score_df = score_dfs[bm]
+
+        # Merge Health Index with institutional score
+        if hi_df is None or hi_df.empty or score_df is None or score_df.empty:
+            # Create 3 unavailable results
+            for variant in ["Mean", "Max", "Last"]:
+                results.append(
+                    _build_unavailable_result(
+                        experiment_name=f"Health Index vs {variant} {bm}",
+                        hypothesis=f"Higher Health Index should correlate with lower {bm} ({spec['coverage']}).",
+                        clinical_meaning=f"Validates alignment with {spec['full_name']}.",
+                        conclusion=f"No data available — {'Health Index' if hi_df is None or (hi_df is not None and hi_df.empty) else bm} scores not computed.",
+                        benchmark=bm,
+                    )
+                )
+            continue
+
+        merged = hi_df.merge(score_df, on="patient_id", how="inner")
+
+        # Experiment 1: Mean HI vs Mean score
+        results.append(
+            _run_negative_correlation_experiment(
+                merged,
+                hi_col="mean_hi_score",
+                institutional_col=spec["mean_col"],
+                experiment_name=f"Health Index vs Mean {bm}",
+                benchmark=bm,
+            )
+        )
+
+        # Experiment 2: Mean HI vs Max score
+        results.append(
+            _run_negative_correlation_experiment(
+                merged,
+                hi_col="mean_hi_score",
+                institutional_col=spec["max_col"],
+                experiment_name=f"Health Index vs Max {bm}",
+                benchmark=bm,
+            )
+        )
+
+        # Experiment 3: Last HI vs Last score
+        results.append(
+            _run_negative_correlation_experiment(
+                merged,
+                hi_col="last_hi_score",
+                institutional_col=spec["last_col"],
+                experiment_name=f"Health Index vs Last {bm}",
+                benchmark=bm,
+            )
+        )
+
     return results
 
 
+# ── Public API ───────────────────────────────────────────────────────────────
+
+
+def run_all_validations(
+    hi_df: pd.DataFrame | None = None,
+    sofa_df: pd.DataFrame | None = None,
+    news2_df: pd.DataFrame | None = None,
+    apache2_df: pd.DataFrame | None = None,
+) -> list[ValidationResult]:
+    """
+    Run all institutional benchmark validation experiments.
+
+    Args:
+      hi_df:      Per-patient Health Index summary with columns:
+                    patient_id, mean_hi_score, last_hi_score
+      sofa_df:    Per-patient SOFA summary with columns:
+                    patient_id, mean_sofa, max_sofa, last_sofa, n_visits
+      news2_df:   Per-patient NEWS2 summary with columns:
+                    patient_id, mean_news2, max_news2, last_news2, n_visits
+      apache2_df: Per-patient APACHE II summary with columns:
+                    patient_id, mean_apache2, max_apache2, last_apache2, n_visits
+
+    Returns:
+      List of 9 ValidationResult objects (3 per benchmark).
+    """
+    return _run_institutional_benchmarks(hi_df, sofa_df, news2_df, apache2_df)
+
+
 def validation_summary_df(results: list[ValidationResult]) -> pd.DataFrame:
-    """Convert list of ValidationResult to a summary DataFrame."""
+    """Convert results to a summary DataFrame for the API."""
     rows = []
     for r in results:
-        rows.append({
-            "Experiment": r.experiment_name,
-            "Statistic": r.statistic_name,
-            "Value": r.statistic_value,
-            "p-value": r.p_value,
-            "n": r.n_samples,
-            "Passed": "✅" if r.passed else "❌",
-            "Conclusion": r.conclusion,
-        })
+        rows.append(
+            {
+                "Experiment": r.experiment_name,
+                "Benchmark": r.benchmark,
+                "Statistic": r.statistic_name,
+                "Value": r.statistic_value,
+                "p-value": r.p_value,
+                "n": r.n_samples,
+                "Passed": "\u2705" if r.passed else "\u274c",
+                "Conclusion": r.conclusion,
+            }
+        )
     return pd.DataFrame(rows)

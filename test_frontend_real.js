@@ -4,7 +4,11 @@ async function test() {
   const res = await fetch("http://127.0.0.1:8000/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages: [{role: "user", content: "What is this patient's health score?"}], patient_id: 100006488 }),
+    body: JSON.stringify({
+      messages: [{role: "user", content: "What is this patient's health score?"}],
+      patient_id: 100006488,
+      active_tab: "Patient Explorer",
+    }),
   });
 
   const decoder = new TextDecoder();

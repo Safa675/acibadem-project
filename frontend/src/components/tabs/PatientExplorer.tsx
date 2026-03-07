@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import type { PatientData } from "@/lib/types";
+import { useState, useMemo, memo, type ChangeEvent } from "react";
+import type { PatientData, PatientMeta, PatientFilters } from "@/lib/types";
 import { formatDate, nlpColor } from "@/lib/utils";
 import {
   RATING_COLORS,
@@ -15,12 +15,13 @@ import MetricLabel from "@/components/ui/MetricLabel";
 import InfoTooltip from "@/components/ui/InfoTooltip";
 import MetricCue from "@/components/ui/MetricCue";
 import Skeleton from "@/components/ui/Skeleton";
+import PatientSearch from "@/components/ui/PatientSearch";
 import {
   getCompositeScoreCue,
   getRegimeCue,
   getHealthScoreCue,
   getDownsideVarCue,
-  getCSICue,
+  getECICue,
 } from "@/lib/interpretation";
 import {
   ComposedChart,
@@ -48,6 +49,16 @@ import useStaggeredReveal from "@/hooks/useStaggeredReveal";
 interface Props {
   data: PatientData | null;
   loading: boolean;
+  switching: boolean;
+  patients: string[];
+  filteredPatients: string[];
+  patientMeta: PatientMeta[];
+  selectedPatientId: string | null;
+  onPatientChange: (e: ChangeEvent<HTMLSelectElement>) => void;
+  onPatientSelect: (patientId: string | null) => void;
+  loadingPatients: boolean;
+  filters: PatientFilters;
+  onFiltersChange: (filters: PatientFilters) => void;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -83,15 +94,377 @@ function computeStateBands(
   return bands;
 }
 
+const COMORBIDITY_CONDITION_OPTIONS = [
+  { key: "hypertension", label: "Hypertension" },
+  { key: "cardiovascular", label: "Cardiovascular" },
+  { key: "diabetes", label: "Diabetes" },
+  { key: "hematologic", label: "Hematologic" },
+  { key: "other_chronic", label: "Other Chronic" },
+  { key: "surgery_history", label: "Surgery History" },
+] as const;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Memoized chart sub-components — prevent re-render when unrelated state changes
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const RegimeTimelineChart = memo(function RegimeTimelineChart({
+  data,
+  stateBands,
+  prescriptionDates,
+  frostyTooltipStyle,
+}: {
+  data: PatientData;
+  stateBands: { x1: string; x2: string; state: string }[];
+  prescriptionDates: string[];
+  frostyTooltipStyle: React.CSSProperties;
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={320}>
+      <ComposedChart
+        data={data.regime_timeline}
+        margin={{ top: 10, right: 20, bottom: 5, left: 0 }}
+      >
+        <CartesianGrid
+          strokeDasharray="3 3"
+          stroke={CHART_COLORS.grid}
+        />
+        <XAxis
+          dataKey="date"
+          tickFormatter={(v: string) => formatDate(v)}
+          stroke={CHART_COLORS.axis}
+          tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
+          minTickGap={40}
+        />
+        <YAxis
+          domain={[0, 108]}
+          stroke={CHART_COLORS.axis}
+          tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
+        />
+        <Tooltip
+          contentStyle={frostyTooltipStyle}
+          labelFormatter={(v: unknown) => formatDate(String(v))}
+        />
+
+        {/* State background bands */}
+        {stateBands.map((band, i) => (
+          <ReferenceArea
+            key={i}
+            x1={band.x1}
+            x2={band.x2}
+            fill={STATE_COLORS[band.state] ?? "#B0BEC5"}
+            fillOpacity={0.18}
+            strokeOpacity={0}
+          />
+        ))}
+
+        {/* Prescription event lines */}
+        {prescriptionDates.map((d, i) => (
+          <ReferenceLine
+            key={`rx-${i}`}
+            x={d}
+            stroke={CHART_COLORS.prescription}
+            strokeDasharray="4 3"
+            strokeWidth={1}
+          />
+        ))}
+
+        {/* MA line */}
+        <Line
+          type="monotone"
+          dataKey="ma"
+          stroke="#9E9E9E"
+          strokeDasharray="6 3"
+          dot={false}
+          strokeWidth={1.5}
+          name="Moving Avg"
+          connectNulls
+          isAnimationActive={false}
+        />
+
+        {/* Health Score line */}
+        <Line
+          type="monotone"
+          dataKey="health_score"
+          stroke={CHART_COLORS.accent}
+          dot={false}
+          strokeWidth={2}
+          name="Health Score"
+          isAnimationActive={false}
+        />
+      </ComposedChart>
+    </ResponsiveContainer>
+  );
+});
+
+const VarFanChart = memo(function VarFanChart({
+  chartData,
+  varFan,
+  frostyTooltipStyle,
+}: {
+  chartData: Array<Record<string, unknown>>;
+  varFan: NonNullable<PatientData["var_fan"]>;
+  frostyTooltipStyle: React.CSSProperties;
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={280}>
+      <AreaChart
+        data={chartData}
+        margin={{ top: 10, right: 20, bottom: 5, left: 0 }}
+      >
+        <CartesianGrid
+          strokeDasharray="3 3"
+          stroke={CHART_COLORS.grid}
+        />
+        <XAxis
+          dataKey="date"
+          tickFormatter={(v: string) => formatDate(v)}
+          stroke={CHART_COLORS.axis}
+          tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
+          minTickGap={40}
+        />
+        <YAxis
+          stroke={CHART_COLORS.axis}
+          tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
+        />
+        <Tooltip
+          contentStyle={frostyTooltipStyle}
+          labelFormatter={(v: unknown) => formatDate(String(v))}
+        />
+
+        {/* p05 – p95 band */}
+        <Area
+          type="monotone"
+          dataKey="p95"
+          stroke="none"
+          fill="rgba(79,195,247,0.18)"
+          name="p95"
+          isAnimationActive={false}
+        />
+        <Area
+          type="monotone"
+          dataKey="p05"
+          stroke="none"
+          fill="#0B0D14"
+          name="p05"
+          isAnimationActive={false}
+        />
+
+        {/* VaR floor */}
+        <ReferenceLine
+          y={varFan.p05}
+          stroke={CHART_COLORS.negative}
+          strokeDasharray="6 3"
+          strokeWidth={1.5}
+          label={{
+            value: `VaR floor ${varFan.p05.toFixed(0)}`,
+            fill: CHART_COLORS.negative,
+            fontSize: 11,
+            position: "insideBottomLeft",
+          }}
+        />
+
+        {/* Median forecast line (dashed) */}
+        <Line
+          type="monotone"
+          dataKey="p50"
+          stroke={CHART_COLORS.accent}
+          strokeDasharray="6 3"
+          dot={false}
+          strokeWidth={1.5}
+          name="Median Forecast"
+          isAnimationActive={false}
+        />
+
+        {/* Historical score line */}
+        <Line
+          type="monotone"
+          dataKey="score"
+          stroke={CHART_COLORS.accent}
+          dot={false}
+          strokeWidth={2}
+          name="Historical"
+          connectNulls
+          isAnimationActive={false}
+        />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+});
+
+const NlpBarChart = memo(function NlpBarChart({
+  nlpBars,
+  frostyTooltipStyle,
+}: {
+  nlpBars: PatientData["nlp_bars"];
+  frostyTooltipStyle: React.CSSProperties;
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={240}>
+      <BarChart
+        data={nlpBars}
+        margin={{ top: 10, right: 20, bottom: 5, left: 0 }}
+      >
+        <CartesianGrid
+          strokeDasharray="3 3"
+          stroke={CHART_COLORS.grid}
+        />
+
+        {/* Faint background bands */}
+        <ReferenceArea
+          y1={0}
+          y2={1}
+          fill={CHART_COLORS.positive}
+          fillOpacity={0.04}
+        />
+        <ReferenceArea
+          y1={-1}
+          y2={0}
+          fill={CHART_COLORS.negative}
+          fillOpacity={0.04}
+        />
+
+        {/* Zero line */}
+        <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" />
+
+        <XAxis
+          dataKey="date"
+          tickFormatter={(v: string) => formatDate(v)}
+          stroke={CHART_COLORS.axis}
+          tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
+          minTickGap={40}
+        />
+        <YAxis
+          stroke={CHART_COLORS.axis}
+          tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
+        />
+        <Tooltip
+          contentStyle={frostyTooltipStyle}
+          labelFormatter={(v: unknown) => formatDate(String(v))}
+          formatter={(value: unknown) => [(Number(value)).toFixed(3), "NLP"]}
+        />
+
+        <Bar dataKey="nlp_composite" name="NLP Composite" radius={[3, 3, 0, 0]} isAnimationActive={false}>
+          {nlpBars.map((entry, i) => (
+            <Cell
+              key={i}
+              fill={
+                entry.nlp_composite < -0.05
+                  ? CHART_COLORS.negative
+                  : entry.nlp_composite < 0.05
+                    ? CHART_COLORS.amber
+                    : CHART_COLORS.positive
+              }
+            />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+});
+
+const LabSeriesChart = memo(function LabSeriesChart({
+  testName,
+  series,
+  frostyTooltipStyle,
+}: {
+  testName: string;
+  series: { dates: string[]; values: number[]; ref_min: number | null; ref_max: number | null };
+  frostyTooltipStyle: React.CSSProperties;
+}) {
+  const chartData = series.dates.map((d, i) => ({
+    date: d,
+    value: series.values[i],
+    refMin: series.ref_min,
+    refMax: series.ref_max,
+  }));
+  return (
+    <div className="frost-panel rounded-xl p-4">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
+        {testName}
+      </div>
+      <div role="img" aria-label={`Line chart for ${testName} laboratory values over time`}>
+      <ResponsiveContainer width="100%" height={160}>
+        <LineChart
+          data={chartData}
+          margin={{ top: 5, right: 10, bottom: 5, left: -10 }}
+        >
+          <CartesianGrid
+            strokeDasharray="3 3"
+            stroke={CHART_COLORS.grid}
+          />
+          <XAxis
+            dataKey="date"
+            tickFormatter={(v: string) => formatDate(v)}
+            stroke={CHART_COLORS.axis}
+            tick={{ fill: CHART_COLORS.text, fontSize: 9 }}
+            minTickGap={30}
+          />
+          <YAxis
+            stroke={CHART_COLORS.axis}
+            tick={{ fill: CHART_COLORS.text, fontSize: 9 }}
+          />
+          <Tooltip
+            contentStyle={{ ...frostyTooltipStyle, fontSize: 11 }}
+            labelFormatter={(v: unknown) => formatDate(String(v))}
+          />
+
+          {/* Reference range band */}
+          {series.ref_min != null &&
+            series.ref_max != null && (
+              <ReferenceArea
+                y1={series.ref_min}
+                y2={series.ref_max}
+                fill="#2ECC71"
+                fillOpacity={0.08}
+                strokeOpacity={0}
+              />
+            )}
+
+          <Line
+            type="monotone"
+            dataKey="value"
+            stroke={CHART_COLORS.accent}
+            strokeWidth={1.5}
+            dot={{ r: 2, fill: CHART_COLORS.accent }}
+            name={testName}
+            isAnimationActive={false}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+      </div>
+    </div>
+  );
+});
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Component
    ═══════════════════════════════════════════════════════════════════════ */
 
-export default function PatientExplorer({ data, loading }: Props) {
+export default function PatientExplorer({
+  data,
+  loading,
+  switching,
+  patients,
+  filteredPatients,
+  patientMeta,
+  selectedPatientId,
+  onPatientChange,
+  onPatientSelect,
+  loadingPatients,
+  filters,
+  onFiltersChange,
+}: Props) {
   const [notesOpen, setNotesOpen] = useState(false);
   const [nliSourceFilter, setNliSourceFilter] = useState<string>("ALL");
   const [nliVisibleCount, setNliVisibleCount] = useState(20);
   const [nliRequestedCount, setNliRequestedCount] = useState("20");
+  const genderFilter = filters.gender;
+  const doctorFilter = filters.doctor;
+  const selectedComorbidityConditions = filters.comorbidityConditions;
+  const ageMinInput = filters.ageMin;
+  const ageMaxInput = filters.ageMax;
+  const weightMinInput = filters.weightMin;
+  const weightMaxInput = filters.weightMax;
   const metricReveal = useStaggeredReveal(6, { stepMs: 100, threshold: 0.2 });
   const demographicReveal = useStaggeredReveal(6, { baseDelayMs: 50, stepMs: 70, threshold: 0.2 });
   const sectionReveal = useStaggeredReveal(8, { baseDelayMs: 120, stepMs: 120, threshold: 0.14 });
@@ -102,11 +475,58 @@ export default function PatientExplorer({ data, loading }: Props) {
     WebkitBackdropFilter: "blur(12px)",
     border: "1px solid var(--color-frost-tooltip-border)",
     borderRadius: 12,
-    boxShadow: "0 12px 30px rgba(4,7,14,0.38)",
+    boxShadow: "0 12px 30px rgba(2,5,10,0.55)",
     fontSize: 12,
   };
 
   /* ── Derived data ──────────────────────────────────────────────────── */
+
+  const metaByPatientId = useMemo(
+    () => new Map(patientMeta.map((m) => [m.patient_id, m])),
+    [patientMeta],
+  );
+
+  const doctorOptions = useMemo(() => {
+    const vals = new Set<string>();
+    patientMeta.forEach((meta) => {
+      const code = meta.doctor_code?.trim();
+      if (code) vals.add(code);
+    });
+    return Array.from(vals).sort((a, b) => a.localeCompare(b));
+  }, [patientMeta]);
+
+  const ageMin = ageMinInput.trim() === "" ? null : Number(ageMinInput);
+  const ageMax = ageMaxInput.trim() === "" ? null : Number(ageMaxInput);
+  const weightMin = weightMinInput.trim() === "" ? null : Number(weightMinInput);
+  const weightMax = weightMaxInput.trim() === "" ? null : Number(weightMaxInput);
+
+  const hasInvalidAgeNumber =
+    ageMinInput.trim() !== "" && !Number.isFinite(ageMin);
+  const hasInvalidAgeNumberMax =
+    ageMaxInput.trim() !== "" && !Number.isFinite(ageMax);
+  const hasInvalidWeightNumber =
+    weightMinInput.trim() !== "" && !Number.isFinite(weightMin);
+  const hasInvalidWeightNumberMax =
+    weightMaxInput.trim() !== "" && !Number.isFinite(weightMax);
+
+  const hasInvalidRange =
+    (ageMin != null && ageMax != null && ageMin > ageMax) ||
+    (weightMin != null && weightMax != null && weightMin > weightMax);
+
+  const hasFilterValidationError =
+    hasInvalidAgeNumber ||
+    hasInvalidAgeNumberMax ||
+    hasInvalidWeightNumber ||
+    hasInvalidWeightNumberMax ||
+    hasInvalidRange;
+
+
+  const selectedPatientInFilter =
+    selectedPatientId != null && filteredPatients.includes(selectedPatientId);
+  const patientSelectValue =
+    selectedPatientInFilter && selectedPatientId != null
+      ? selectedPatientId
+      : "";
 
   const stateBands = useMemo(
     () => (data ? computeStateBands(data.regime_timeline) : []),
@@ -181,9 +601,29 @@ export default function PatientExplorer({ data, loading }: Props) {
       : Math.min(Math.max(1, nliVisibleCount), filteredNliScores.length);
   const visibleNliRows = filteredNliScores.slice(0, visibleNliCount);
 
+  const resetFilters = () => {
+    onFiltersChange({
+      gender: "ALL",
+      doctor: "ALL",
+      comorbidityConditions: [],
+      ageMin: "",
+      ageMax: "",
+      weightMin: "",
+      weightMax: "",
+    });
+  };
+
+  const toggleComorbidityCondition = (conditionKey: string) => {
+    const prev = filters.comorbidityConditions;
+    const next = prev.includes(conditionKey)
+      ? prev.filter((key) => key !== conditionKey)
+      : [...prev, conditionKey];
+    onFiltersChange({...filters, comorbidityConditions: next});
+  };
+
   /* ── Loading skeleton ──────────────────────────────────────────────── */
 
-  if (loading) {
+  if (loading && !data) {
     return (
       <div className="space-y-6 p-4">
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
@@ -222,7 +662,7 @@ export default function PatientExplorer({ data, loading }: Props) {
   const regimeCue = getRegimeCue(s.regime_state);
   const healthCue = s.health_score != null ? getHealthScoreCue(s.health_score) : null;
   const varCue = s.downside_var_pct != null ? getDownsideVarCue(s.downside_var_pct) : null;
-  const csiCue = s.csi_score != null ? getCSICue(s.csi_score) : null;
+  const eciCue = s.eci_score != null ? getECICue(s.eci_score) : null;
   const hasCriticalVar = s.downside_var_pct != null && s.downside_var_pct > 70;
   const hasCriticalRating = /CCC|CC|C|D/.test(s.rating) || s.rating === "B/CCC";
 
@@ -231,13 +671,192 @@ export default function PatientExplorer({ data, loading }: Props) {
      ════════════════════════════════════════════════════════════════ */
 
   return (
-    <div className="space-y-6 p-2 sm:p-4">
+    <div className="relative space-y-6 p-2 sm:p-4">
       <div className="tab-intro tab-intro-frost frost-panel">
-        <h2 className="tab-intro-title">Patient Explorer</h2>
-        <p className="tab-intro-subtitle">
-          Longitudinal risk trajectory, clinical language signals, and individualized context for selected patient.
-        </p>
+        <div className="tab-intro-header-row">
+          <div>
+            <h2 className="tab-intro-title">Patient Health Explorer</h2>
+            <p className="tab-intro-subtitle">
+              Longitudinal risk trajectory, clinical language signals, and individualized context for selected patient.
+            </p>
+          </div>
+          <div className="app-filter tab-inline-filter" style={{ minWidth: 220 }}>
+            <label htmlFor="patient-search-explorer" className="app-filter-label">
+              Patient
+            </label>
+            <PatientSearch
+              id="patient-search-explorer"
+              selectedPatientId={selectedPatientId}
+              onSelect={(pid) => onPatientSelect(pid)}
+              disabled={loadingPatients}
+              placeholder="Search patient ID..."
+            />
+          </div>
+        </div>
+
+        <div className="explorer-filter-bar">
+          <div className="explorer-filter-field">
+            <span className="explorer-filter-label-row">
+              <MetricLabel
+                text="Gender"
+                metricId="explorer.filter.gender"
+                className="explorer-filter-label-metric"
+              />
+            </span>
+            <select
+              id="explorer-gender-filter"
+              className="explorer-filter-select"
+              value={genderFilter}
+              onChange={(e) => onFiltersChange({...filters, gender: e.target.value})}
+            >
+              <option value="ALL">All</option>
+              <option value="K">Female</option>
+              <option value="E">Male</option>
+            </select>
+          </div>
+
+          <div className="explorer-filter-field">
+            <span className="explorer-filter-label-row">
+              <MetricLabel
+                text="Doctor"
+                metricId="explorer.filter.doctor_code"
+                className="explorer-filter-label-metric"
+              />
+            </span>
+            <select
+              id="explorer-doctor-filter"
+              className="explorer-filter-select"
+              value={doctorFilter}
+              onChange={(e) => onFiltersChange({...filters, doctor: e.target.value})}
+            >
+              <option value="ALL">All</option>
+              {doctorOptions.map((doctorCode) => (
+                <option key={doctorCode} value={doctorCode}>
+                  {doctorCode}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="explorer-filter-field explorer-filter-field-range">
+            <span className="explorer-filter-label-row">
+              <MetricLabel
+                text="Age"
+                metricId="explorer.filter.age_range"
+                className="explorer-filter-label-metric"
+              />
+            </span>
+            <div className="explorer-filter-range">
+              <input
+                id="explorer-age-min"
+                className="explorer-filter-input"
+                type="number"
+                min={0}
+                value={ageMinInput}
+                onChange={(e) => onFiltersChange({...filters, ageMin: e.target.value})}
+                placeholder="Min"
+              />
+              <span className="explorer-filter-range-sep">-</span>
+              <input
+                id="explorer-age-max"
+                className="explorer-filter-input"
+                type="number"
+                min={0}
+                value={ageMaxInput}
+                onChange={(e) => onFiltersChange({...filters, ageMax: e.target.value})}
+                placeholder="Max"
+              />
+            </div>
+          </div>
+
+          <div className="explorer-filter-field explorer-filter-field-range">
+            <span className="explorer-filter-label-row">
+              <MetricLabel
+                text="Weight (kg)"
+                metricId="explorer.filter.weight_range"
+                className="explorer-filter-label-metric"
+              />
+            </span>
+            <div className="explorer-filter-range">
+              <input
+                id="explorer-weight-min"
+                className="explorer-filter-input"
+                type="number"
+                min={0}
+                step="0.1"
+                value={weightMinInput}
+                onChange={(e) => onFiltersChange({...filters, weightMin: e.target.value})}
+                placeholder="Min"
+              />
+              <span className="explorer-filter-range-sep">-</span>
+              <input
+                id="explorer-weight-max"
+                className="explorer-filter-input"
+                type="number"
+                min={0}
+                step="0.1"
+                value={weightMaxInput}
+                onChange={(e) => onFiltersChange({...filters, weightMax: e.target.value})}
+                placeholder="Max"
+              />
+            </div>
+          </div>
+
+          <div className="explorer-filter-field explorer-filter-field-comorb">
+            <span className="explorer-filter-label-row">
+              <MetricLabel
+                text="Comorbidities"
+                metricId="explorer.filter.comorbidities"
+                className="explorer-filter-label-metric"
+              />
+            </span>
+            <div className="explorer-filter-checkboxes">
+              {COMORBIDITY_CONDITION_OPTIONS.map((option) => {
+                const inputId = `explorer-comorb-${option.key}`;
+                return (
+                  <label key={option.key} htmlFor={inputId} className="explorer-filter-checkbox-label">
+                    <input
+                      id={inputId}
+                      type="checkbox"
+                      checked={selectedComorbidityConditions.includes(option.key)}
+                      onChange={() => toggleComorbidityCondition(option.key)}
+                    />
+                    <span>{option.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            className="explorer-filter-reset"
+            onClick={resetFilters}
+          >
+            Reset Filters
+          </button>
+        </div>
+
+        {hasFilterValidationError && (
+          <p className="explorer-filter-message explorer-filter-message-error">
+            Invalid filter input: use numeric bounds and keep min less than or equal to max.
+          </p>
+        )}
+        {!hasFilterValidationError && filteredPatients.length === 0 && !loadingPatients && (
+          <p className="explorer-filter-message">
+            No patients match current filters.
+          </p>
+        )}
       </div>
+
+      {switching && (
+        <div className="tab-switch-overlay" aria-live="polite" aria-busy="true">
+          <div className="tab-switch-chip">
+            <span className="loading-spinner tab-switch-spinner" />
+            <span>Loading selected patient data…</span>
+          </div>
+        </div>
+      )}
 
       {/* ── 1. Summary Metric Cards ──────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
@@ -341,18 +960,18 @@ export default function PatientExplorer({ data, loading }: Props) {
           );
         })()}
 
-        {/* CSI Score */}
+        {/* ECI Score */}
         {(() => {
           const reveal = metricReveal.getRevealProps(5, "fade");
           return (
         <div {...reveal.staggerAttrs} className={`frost-panel frost-kpi-card ${reveal.staggerClass}`} style={reveal.staggerStyle}>
           <div className="metric-value">
-            {s.csi_score != null ? s.csi_score.toFixed(2) : "—"}
+            {s.eci_score != null ? s.eci_score.toFixed(1) : "—"}
           </div>
           <div className="metric-label">
-            <MetricLabel text="CSI Score" metricId="patient.summary.csi_score" />
+            <MetricLabel text="ECI Score" metricId="patient.summary.eci_score" />
           </div>
-          {csiCue && <MetricCue cue={csiCue} />}
+          {eciCue && <MetricCue cue={eciCue} />}
         </div>
           );
         })()}
@@ -421,84 +1040,7 @@ export default function PatientExplorer({ data, loading }: Props) {
             </span>
           </h3>
           <div role="img" aria-label="Timeline chart showing patient health score trajectory, state bands, and prescription events">
-          <ResponsiveContainer width="100%" height={320}>
-            <ComposedChart
-              data={data.regime_timeline}
-              margin={{ top: 10, right: 20, bottom: 5, left: 0 }}
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke={CHART_COLORS.grid}
-              />
-              <XAxis
-                dataKey="date"
-                tickFormatter={(v: string) => formatDate(v)}
-                stroke={CHART_COLORS.axis}
-                tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
-                minTickGap={40}
-              />
-              <YAxis
-                domain={[0, 108]}
-                stroke={CHART_COLORS.axis}
-                tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
-              />
-              <Tooltip
-                contentStyle={frostyTooltipStyle}
-                labelFormatter={(v: unknown) => formatDate(String(v))}
-              />
-
-              {/* State background bands */}
-              {stateBands.map((band, i) => (
-                <ReferenceArea
-                  key={i}
-                  x1={band.x1}
-                  x2={band.x2}
-                  fill={STATE_COLORS[band.state] ?? "#B0BEC5"}
-                  fillOpacity={0.18}
-                  strokeOpacity={0}
-                />
-              ))}
-
-              {/* Prescription event lines */}
-              {data.prescription_dates.map((d, i) => (
-                <ReferenceLine
-                  key={`rx-${i}`}
-                  x={d}
-                  stroke={CHART_COLORS.prescription}
-                  strokeDasharray="4 3"
-                  strokeWidth={1}
-                />
-              ))}
-
-              {/* MA line */}
-              <Line
-                type="monotone"
-                dataKey="ma"
-                stroke="#9E9E9E"
-                strokeDasharray="6 3"
-                dot={false}
-                strokeWidth={1.5}
-                name="Moving Avg"
-                connectNulls
-                isAnimationActive
-                animationDuration={900}
-                animationBegin={120}
-              />
-
-              {/* Health Score line */}
-              <Line
-                type="monotone"
-                dataKey="health_score"
-                stroke={CHART_COLORS.accent}
-                dot={false}
-                strokeWidth={2}
-                name="Health Score"
-                isAnimationActive
-                animationDuration={1050}
-                animationBegin={220}
-              />
-            </ComposedChart>
-          </ResponsiveContainer>
+          <RegimeTimelineChart data={data} stateBands={stateBands} prescriptionDates={data.prescription_dates} frostyTooltipStyle={frostyTooltipStyle} />
           </div>
 
           {/* Legend for state bands */}
@@ -561,96 +1103,7 @@ export default function PatientExplorer({ data, loading }: Props) {
           </div>
 
           <div role="img" aria-label="Area chart showing historical score and forecast downside VaR fan range">
-          <ResponsiveContainer width="100%" height={280}>
-            <AreaChart
-              data={varFanChartData.combined}
-              margin={{ top: 10, right: 20, bottom: 5, left: 0 }}
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke={CHART_COLORS.grid}
-              />
-              <XAxis
-                dataKey="date"
-                tickFormatter={(v: string) => formatDate(v)}
-                stroke={CHART_COLORS.axis}
-                tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
-                minTickGap={40}
-              />
-              <YAxis
-                stroke={CHART_COLORS.axis}
-                tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
-              />
-              <Tooltip
-                contentStyle={frostyTooltipStyle}
-                labelFormatter={(v: unknown) => formatDate(String(v))}
-              />
-
-              {/* p05 – p95 band */}
-              <Area
-                type="monotone"
-                dataKey="p95"
-                stroke="none"
-                fill="rgba(79,195,247,0.18)"
-                name="p95"
-                isAnimationActive
-                animationDuration={900}
-                animationBegin={120}
-              />
-              <Area
-                type="monotone"
-                dataKey="p05"
-                stroke="none"
-                fill="#0B0D14"
-                name="p05"
-                isAnimationActive
-                animationDuration={900}
-                animationBegin={120}
-              />
-
-              {/* VaR floor */}
-              <ReferenceLine
-                y={data.var_fan!.p05}
-                stroke={CHART_COLORS.negative}
-                strokeDasharray="6 3"
-                strokeWidth={1.5}
-                label={{
-                  value: `VaR floor ${data.var_fan!.p05.toFixed(0)}`,
-                  fill: CHART_COLORS.negative,
-                  fontSize: 11,
-                  position: "insideBottomLeft",
-                }}
-              />
-
-              {/* Median forecast line (dashed) */}
-              <Line
-                type="monotone"
-                dataKey="p50"
-                stroke={CHART_COLORS.accent}
-                strokeDasharray="6 3"
-                dot={false}
-                strokeWidth={1.5}
-                name="Median Forecast"
-                isAnimationActive
-                animationDuration={980}
-                animationBegin={220}
-              />
-
-              {/* Historical score line */}
-              <Line
-                type="monotone"
-                dataKey="score"
-                stroke={CHART_COLORS.accent}
-                dot={false}
-                strokeWidth={2}
-                name="Historical"
-                connectNulls
-                isAnimationActive
-                animationDuration={1050}
-                animationBegin={260}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+          <VarFanChart chartData={varFanChartData.combined} varFan={data.var_fan!} frostyTooltipStyle={frostyTooltipStyle} />
           </div>
         </div>
       )}
@@ -669,66 +1122,7 @@ export default function PatientExplorer({ data, loading }: Props) {
             </span>
           </h3>
           <div role="img" aria-label="Bar chart showing visit-level NLP composite signal over time">
-          <ResponsiveContainer width="100%" height={240}>
-            <BarChart
-              data={data.nlp_bars}
-              margin={{ top: 10, right: 20, bottom: 5, left: 0 }}
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke={CHART_COLORS.grid}
-              />
-
-              {/* Faint background bands */}
-              <ReferenceArea
-                y1={0}
-                y2={1}
-                fill={CHART_COLORS.positive}
-                fillOpacity={0.04}
-              />
-              <ReferenceArea
-                y1={-1}
-                y2={0}
-                fill={CHART_COLORS.negative}
-                fillOpacity={0.04}
-              />
-
-              {/* Zero line */}
-              <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" />
-
-              <XAxis
-                dataKey="date"
-                tickFormatter={(v: string) => formatDate(v)}
-                stroke={CHART_COLORS.axis}
-                tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
-                minTickGap={40}
-              />
-              <YAxis
-                stroke={CHART_COLORS.axis}
-                tick={{ fill: CHART_COLORS.text, fontSize: 11 }}
-              />
-              <Tooltip
-                contentStyle={frostyTooltipStyle}
-                labelFormatter={(v: unknown) => formatDate(String(v))}
-                formatter={(value: unknown) => [(Number(value)).toFixed(3), "NLP"]}
-              />
-
-              <Bar dataKey="nlp_composite" name="NLP Composite" radius={[3, 3, 0, 0]} isAnimationActive animationDuration={960} animationBegin={160}>
-                {data.nlp_bars.map((entry, i) => (
-                  <Cell
-                    key={i}
-                    fill={
-                      entry.nlp_composite < -0.05
-                        ? CHART_COLORS.negative
-                        : entry.nlp_composite < 0.05
-                          ? CHART_COLORS.amber
-                          : CHART_COLORS.positive
-                    }
-                  />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
+          <NlpBarChart nlpBars={data.nlp_bars} frostyTooltipStyle={frostyTooltipStyle} />
           </div>
           <div className="chart-legend-inline" aria-label="NLP signal legend">
             <span className="chart-legend-label"><span className="chart-legend-swatch" style={{ backgroundColor: CHART_COLORS.positive }} /> Positive Signal</span>
@@ -898,77 +1292,9 @@ export default function PatientExplorer({ data, loading }: Props) {
             Laboratory Time-Series
           </h3>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {labEntries.map(([testName, series]) => {
-              const chartData = series.dates.map((d, i) => ({
-                date: d,
-                value: series.values[i],
-                refMin: series.ref_min,
-                refMax: series.ref_max,
-              }));
-
-              return (
-                <div
-                  key={testName}
-                  className="frost-panel rounded-xl p-4"
-                >
-                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
-                    {testName}
-                  </div>
-                  <div role="img" aria-label={`Line chart for ${testName} laboratory values over time`}>
-                  <ResponsiveContainer width="100%" height={160}>
-                    <LineChart
-                      data={chartData}
-                      margin={{ top: 5, right: 10, bottom: 5, left: -10 }}
-                    >
-                      <CartesianGrid
-                        strokeDasharray="3 3"
-                        stroke={CHART_COLORS.grid}
-                      />
-                      <XAxis
-                        dataKey="date"
-                        tickFormatter={(v: string) => formatDate(v)}
-                        stroke={CHART_COLORS.axis}
-                        tick={{ fill: CHART_COLORS.text, fontSize: 9 }}
-                        minTickGap={30}
-                      />
-                      <YAxis
-                        stroke={CHART_COLORS.axis}
-                        tick={{ fill: CHART_COLORS.text, fontSize: 9 }}
-                      />
-                        <Tooltip
-                          contentStyle={{ ...frostyTooltipStyle, fontSize: 11 }}
-                          labelFormatter={(v: unknown) => formatDate(String(v))}
-                        />
-
-                      {/* Reference range band */}
-                      {series.ref_min != null &&
-                        series.ref_max != null && (
-                          <ReferenceArea
-                            y1={series.ref_min}
-                            y2={series.ref_max}
-                            fill="#2ECC71"
-                            fillOpacity={0.08}
-                            strokeOpacity={0}
-                          />
-                        )}
-
-                      <Line
-                        type="monotone"
-                        dataKey="value"
-                        stroke={CHART_COLORS.accent}
-                        strokeWidth={1.5}
-                        dot={{ r: 2, fill: CHART_COLORS.accent }}
-                        name={testName}
-                        isAnimationActive
-                        animationDuration={900}
-                        animationBegin={140}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                  </div>
-                </div>
-              );
-            })}
+            {labEntries.map(([testName, series]) => (
+              <LabSeriesChart key={testName} testName={testName} series={series} frostyTooltipStyle={frostyTooltipStyle} />
+            ))}
           </div>
         </div>
       )}

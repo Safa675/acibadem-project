@@ -3,19 +3,34 @@
 export interface KPI {
   n_patients: number;
   mean_score: number;
-  n_high_risk: number;
+  mean_eci: number;
   n_critical: number;
   total_rx: number;
 }
 
+export interface PatientMeta {
+  patient_id: string;
+  age: number | null;
+  sex: string | null;
+  sex_raw?: string | null;
+  weight_kg: number | null;
+  doctor_code: string | null;
+  comorbidity_conditions: string[];
+}
+
 export interface CompositeRow {
-  patient_id: number;
+  patient_id: string;
   rating: string;
   composite_score: number;
   health_index_score: number;
   nlp_score: number;
-  csi_score?: number;
-  csi_tier?: string;
+  eci_score?: number;
+  eci_rating?: string;
+  eci_rating_label?: string;
+  eci_visit_intensity?: number;
+  eci_med_burden?: number;
+  eci_diagnostic_intensity?: number;
+  eci_trajectory_cost?: number;
   n_prescriptions?: number;
   n_comorbidities?: number;
   age?: number;
@@ -23,7 +38,7 @@ export interface CompositeRow {
 }
 
 export interface VarSummaryRow {
-  patient_id: number;
+  patient_id: string;
   current_score: number;
   var_pct: number;
   health_var_score: number;
@@ -34,20 +49,53 @@ export interface VarSummaryRow {
 }
 
 export interface ScatterPoint {
-  patient_id: number;
+  patient_id: string;
   health_index_score: number;
   nlp_score: number;
   rating: string;
-  csi_score: number;
+  eci_score: number;
+}
+
+export interface RatingInterval {
+  rating: string;
+  min_score: number;
+  max_score: number;
+  label: string;
 }
 
 export interface CohortData {
   kpi: KPI;
   composites: CompositeRow[];
+  composites_pagination?: PaginationMeta;
   var_summary: VarSummaryRow[];
+  var_pagination?: PaginationMeta;
   rating_distribution: Record<string, number>;
+  rating_intervals: RatingInterval[];
   regime_distribution: Record<string, number>;
   scatter_data: ScatterPoint[];
+  scatter_total?: number;
+}
+
+export interface PaginationMeta {
+  page: number;
+  per_page: number;
+  total: number;
+  total_pages: number;
+}
+
+export interface PatientSearchResult {
+  patient_id: string;
+  age: number | null;
+  sex: string | null;
+  sex_raw?: string | null;
+  weight_kg?: number | null;
+  doctor_code?: string | null;
+  comorbidity_conditions?: string[];
+}
+
+export interface PatientSearchResponse {
+  results: PatientSearchResult[];
+  total_matched: number;
 }
 
 export interface Comorbidity {
@@ -100,14 +148,19 @@ export interface ClinicalNote {
 }
 
 export interface PatientSummary {
-  patient_id: number;
+  patient_id: string;
   rating: string;
   composite_score: number;
   regime_state: string;
   health_score: number | null;
   downside_var_pct: number | null;
-  csi_score: number | null;
-  csi_tier: string | null;
+  eci_score: number | null;
+  eci_rating: string | null;
+  eci_rating_label: string | null;
+  eci_visit_intensity: number | null;
+  eci_med_burden: number | null;
+  eci_diagnostic_intensity: number | null;
+  eci_trajectory_cost: number | null;
   age: number | null;
   sex: string | null;
   n_comorbidities: number;
@@ -128,9 +181,14 @@ export interface PatientData {
   clinical_notes: ClinicalNote[];
 }
 
-export interface CSI {
-  score: number;
-  tier: string;
+export interface ECI {
+  score: number | null;
+  rating: string | null;
+  rating_label: string | null;
+  visit_intensity: number | null;
+  med_burden: number | null;
+  diagnostic_intensity: number | null;
+  trajectory_cost: number | null;
 }
 
 export interface FeatureBar {
@@ -139,9 +197,9 @@ export interface FeatureBar {
 }
 
 export interface CohortRanking {
-  patient_id: number;
+  patient_id: string;
   label: string;
-  csi_score: number;
+  eci_score: number;
   is_selected: boolean;
 }
 
@@ -152,10 +210,12 @@ export interface FeatureCorrelation {
 }
 
 export interface OutcomeData {
-  csi: CSI;
+  eci: ECI;
   narrative: string;
   feature_bar: FeatureBar[];
   cohort_ranking: CohortRanking[];
+  patient_percentile: number | null;
+  cohort_total: number;
   feature_correlations: FeatureCorrelation[];
 }
 
@@ -169,6 +229,7 @@ export interface ValidationExperiment {
   n_samples: number;
   conclusion: string;
   clinical_meaning: string;
+  benchmark: string; // "SOFA" | "NEWS2" | "APACHE II"
   details: Record<string, unknown> | null;
 }
 
@@ -180,4 +241,14 @@ export interface ValidationData {
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+}
+
+export interface PatientFilters {
+  gender: string;
+  doctor: string;
+  comorbidityConditions: string[];
+  ageMin: string;
+  ageMax: string;
+  weightMin: string;
+  weightMax: string;
 }

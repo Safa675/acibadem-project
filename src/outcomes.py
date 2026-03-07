@@ -40,7 +40,7 @@ from scipy.stats import spearmanr
 
 @dataclass
 class PatientOutcomeProfile:
-    patient_id: int
+    patient_id: str
 
     # ---- Feature vector ----
     initial_health_score: float
@@ -83,9 +83,21 @@ _COMORBIDITY_COLUMNS = [
 ]
 
 
-def _count_comorbidities(ana_df: pd.DataFrame, patient_id: int) -> int:
-    """Count how many comorbidity flags are positive for this patient."""
-    rows = ana_df[ana_df["patient_id"] == patient_id]
+def _count_comorbidities(
+    ana_df: pd.DataFrame, patient_id: str, *, patient_rows: pd.DataFrame | None = None
+) -> int:
+    """Count how many comorbidity flags are positive for this patient.
+
+    Args:
+        ana_df: full anadata DataFrame (used as fallback)
+        patient_id: patient identifier
+        patient_rows: pre-filtered rows for this patient (O(1) vs O(N) scan)
+    """
+    rows = (
+        patient_rows
+        if patient_rows is not None
+        else ana_df[ana_df["patient_id"] == patient_id]
+    )
     if rows.empty:
         return 0
     count = 0
@@ -233,12 +245,15 @@ def _compute_csi(
 
 
 def build_patient_outcome_profile(
-    patient_id: int,
+    patient_id: str,
     snapshots: list,
     regime_result,
     ana_df: pd.DataFrame,
     rec_df: pd.DataFrame,
     nlp_df: pd.DataFrame,
+    *,
+    patient_ana: pd.DataFrame | None = None,
+    patient_recs: pd.DataFrame | None = None,
 ) -> PatientOutcomeProfile:
     """
     Build a complete PatientOutcomeProfile from all available data sources.
@@ -247,9 +262,11 @@ def build_patient_outcome_profile(
         patient_id: patient identifier
         snapshots: list of HealthSnapshot from HealthIndexBuilder
         regime_result: PatientRegimeResult (or None)
-        ana_df: full anadata DataFrame
-        rec_df: full prescriptions DataFrame
+        ana_df: full anadata DataFrame (fallback if patient_ana not provided)
+        rec_df: full prescriptions DataFrame (fallback if patient_recs not provided)
         nlp_df: NLP-scored visits DataFrame for this patient (from score_patient_visits)
+        patient_ana: pre-filtered ana rows for this patient (avoids N+1 scan)
+        patient_recs: pre-filtered prescription rows for this patient (avoids N+1 scan)
     """
     # --- Health score series ---
     scores = [s.health_score for s in snapshots] if snapshots else []
@@ -270,12 +287,13 @@ def build_patient_outcome_profile(
     if nlp_df is not None and not nlp_df.empty and "nlp_composite" in nlp_df.columns:
         mean_nlp = float(nlp_df["nlp_composite"].mean())
 
-    # --- Prescription features ---
-    patient_recs = (
-        rec_df[rec_df["patient_id"] == patient_id]
-        if rec_df is not None
-        else pd.DataFrame()
-    )
+    # --- Prescription features (use pre-filtered if available) ---
+    if patient_recs is None:
+        patient_recs = (
+            rec_df[rec_df["patient_id"] == patient_id]
+            if rec_df is not None
+            else pd.DataFrame()
+        )
     n_prescriptions = len(patient_recs)
     if not patient_recs.empty and "date" in patient_recs.columns:
         dates = patient_recs["date"].dropna()
@@ -290,12 +308,13 @@ def build_patient_outcome_profile(
     else:
         rx_velocity = 0.0
 
-    # --- Demographics & comorbidities ---
-    patient_ana = (
-        ana_df[ana_df["patient_id"] == patient_id]
-        if ana_df is not None
-        else pd.DataFrame()
-    )
+    # --- Demographics & comorbidities (use pre-filtered if available) ---
+    if patient_ana is None:
+        patient_ana = (
+            ana_df[ana_df["patient_id"] == patient_id]
+            if ana_df is not None
+            else pd.DataFrame()
+        )
     age = None
     sex = None
     total_care_days = None
@@ -320,7 +339,9 @@ def build_patient_outcome_profile(
                 total_visits = int(vis_vals.iloc[0])
 
     n_comorbidities = (
-        _count_comorbidities(ana_df, patient_id) if ana_df is not None else 0
+        _count_comorbidities(ana_df, patient_id, patient_rows=patient_ana)
+        if ana_df is not None
+        else 0
     )
 
     # --- CSI ---
@@ -374,16 +395,44 @@ def build_all_outcome_profiles(
         ana_df, rec_df: DataFrames from data_loader
         nlp_results: {patient_id: nlp_df} (optional, will recompute if None)
     """
-    from .nlp_signal import score_patient_visits
+    # nlp_signal.py removed — NLP scoring is now LLM-based and cached offline.
+    # If nlp_results is None, we simply return an empty DataFrame.
+    _empty_nlp_df = pd.DataFrame(columns=["visit_date", "patient_id", "nlp_composite"])
+
+    # Build row-index maps once; avoids materializing per-patient DataFrame copies.
+    ana_group_indices: dict[str, object] = {}
+    rec_group_indices: dict[str, object] = {}
+
+    if ana_df is not None and not ana_df.empty and "patient_id" in ana_df.columns:
+        ana_group_indices = {
+            str(pid): idx
+            for pid, idx in ana_df.groupby("patient_id", sort=False).groups.items()
+        }
+    if rec_df is not None and not rec_df.empty and "patient_id" in rec_df.columns:
+        rec_group_indices = {
+            str(pid): idx
+            for pid, idx in rec_df.groupby("patient_id", sort=False).groups.items()
+        }
+
+    empty_ana = ana_df.iloc[0:0] if ana_df is not None else pd.DataFrame()
+    empty_rec = rec_df.iloc[0:0] if rec_df is not None else pd.DataFrame()
+    empty_nlp = pd.DataFrame(columns=["visit_date", "patient_id", "nlp_composite"])
 
     profiles = []
     all_pids = set(all_snapshots.keys()) | set(regimes.keys())
     for pid in sorted(all_pids):
+        pid_key = str(pid)
         snaps = all_snapshots.get(pid, [])
         regime = regimes.get(pid, None)
-        nlp_df = (nlp_results or {}).get(pid)
-        if nlp_df is None:
-            nlp_df = score_patient_visits(ana_df, pid)
+        if nlp_results is None:
+            nlp_df = _empty_nlp_df
+        else:
+            nlp_df = nlp_results.get(pid)
+            if nlp_df is None:
+                nlp_df = nlp_results.get(pid_key, empty_nlp)
+
+        ana_idx = ana_group_indices.get(pid_key)
+        rec_idx = rec_group_indices.get(pid_key)
 
         profile = build_patient_outcome_profile(
             patient_id=pid,
@@ -392,6 +441,8 @@ def build_all_outcome_profiles(
             ana_df=ana_df,
             rec_df=rec_df,
             nlp_df=nlp_df,
+            patient_ana=ana_df.iloc[ana_idx] if ana_idx is not None else empty_ana,
+            patient_recs=rec_df.iloc[rec_idx] if rec_idx is not None else empty_rec,
         )
         profiles.append(profile)
 

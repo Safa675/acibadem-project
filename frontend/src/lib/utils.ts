@@ -25,8 +25,8 @@ export function nlpColor(score: number): string {
   return "#7f8c8d";
 }
 
-export function csiColor(value: number): string {
-  if (value > 8) return "#E74C3C";
-  if (value > 4) return "#F39C12";
+export function eciColor(value: number): string {
+  if (value >= 66) return "#E74C3C";
+  if (value >= 33) return "#F39C12";
   return "#2ECC71";
 }
