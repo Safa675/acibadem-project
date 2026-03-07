@@ -14,6 +14,7 @@ import {
 import MetricLabel from "@/components/ui/MetricLabel";
 import InfoTooltip from "@/components/ui/InfoTooltip";
 import MetricCue from "@/components/ui/MetricCue";
+import PatientFilterBar from "@/components/ui/PatientFilterBar";
 import Skeleton from "@/components/ui/Skeleton";
 import PatientSearch from "@/components/ui/PatientSearch";
 import {
@@ -93,15 +94,6 @@ function computeStateBands(
   });
   return bands;
 }
-
-const COMORBIDITY_CONDITION_OPTIONS = [
-  { key: "hypertension", label: "Hypertension" },
-  { key: "cardiovascular", label: "Cardiovascular" },
-  { key: "diabetes", label: "Diabetes" },
-  { key: "hematologic", label: "Hematologic" },
-  { key: "other_chronic", label: "Other Chronic" },
-  { key: "surgery_history", label: "Surgery History" },
-] as const;
 
 /* ═══════════════════════════════════════════════════════════════════════════
    Memoized chart sub-components — prevent re-render when unrelated state changes
@@ -458,13 +450,6 @@ export default function PatientExplorer({
   const [nliSourceFilter, setNliSourceFilter] = useState<string>("ALL");
   const [nliVisibleCount, setNliVisibleCount] = useState(20);
   const [nliRequestedCount, setNliRequestedCount] = useState("20");
-  const genderFilter = filters.gender;
-  const doctorFilter = filters.doctor;
-  const selectedComorbidityConditions = filters.comorbidityConditions;
-  const ageMinInput = filters.ageMin;
-  const ageMaxInput = filters.ageMax;
-  const weightMinInput = filters.weightMin;
-  const weightMaxInput = filters.weightMax;
   const metricReveal = useStaggeredReveal(7, { stepMs: 100, threshold: 0.2 });
   const demographicReveal = useStaggeredReveal(6, { baseDelayMs: 50, stepMs: 70, threshold: 0.2 });
   const sectionReveal = useStaggeredReveal(8, { baseDelayMs: 120, stepMs: 120, threshold: 0.14 });
@@ -480,46 +465,6 @@ export default function PatientExplorer({
   };
 
   /* ── Derived data ──────────────────────────────────────────────────── */
-
-  const metaByPatientId = useMemo(
-    () => new Map(patientMeta.map((m) => [m.patient_id, m])),
-    [patientMeta],
-  );
-
-  const doctorOptions = useMemo(() => {
-    const vals = new Set<string>();
-    patientMeta.forEach((meta) => {
-      const code = meta.doctor_code?.trim();
-      if (code) vals.add(code);
-    });
-    return Array.from(vals).sort((a, b) => a.localeCompare(b));
-  }, [patientMeta]);
-
-  const ageMin = ageMinInput.trim() === "" ? null : Number(ageMinInput);
-  const ageMax = ageMaxInput.trim() === "" ? null : Number(ageMaxInput);
-  const weightMin = weightMinInput.trim() === "" ? null : Number(weightMinInput);
-  const weightMax = weightMaxInput.trim() === "" ? null : Number(weightMaxInput);
-
-  const hasInvalidAgeNumber =
-    ageMinInput.trim() !== "" && !Number.isFinite(ageMin);
-  const hasInvalidAgeNumberMax =
-    ageMaxInput.trim() !== "" && !Number.isFinite(ageMax);
-  const hasInvalidWeightNumber =
-    weightMinInput.trim() !== "" && !Number.isFinite(weightMin);
-  const hasInvalidWeightNumberMax =
-    weightMaxInput.trim() !== "" && !Number.isFinite(weightMax);
-
-  const hasInvalidRange =
-    (ageMin != null && ageMax != null && ageMin > ageMax) ||
-    (weightMin != null && weightMax != null && weightMin > weightMax);
-
-  const hasFilterValidationError =
-    hasInvalidAgeNumber ||
-    hasInvalidAgeNumberMax ||
-    hasInvalidWeightNumber ||
-    hasInvalidWeightNumberMax ||
-    hasInvalidRange;
-
 
   const selectedPatientInFilter =
     selectedPatientId != null && filteredPatients.includes(selectedPatientId);
@@ -601,26 +546,6 @@ export default function PatientExplorer({
       : Math.min(Math.max(1, nliVisibleCount), filteredNliScores.length);
   const visibleNliRows = filteredNliScores.slice(0, visibleNliCount);
 
-  const resetFilters = () => {
-    onFiltersChange({
-      gender: "ALL",
-      doctor: "ALL",
-      comorbidityConditions: [],
-      ageMin: "",
-      ageMax: "",
-      weightMin: "",
-      weightMax: "",
-    });
-  };
-
-  const toggleComorbidityCondition = (conditionKey: string) => {
-    const prev = filters.comorbidityConditions;
-    const next = prev.includes(conditionKey)
-      ? prev.filter((key) => key !== conditionKey)
-      : [...prev, conditionKey];
-    onFiltersChange({...filters, comorbidityConditions: next});
-  };
-
   /* ── Loading skeleton ──────────────────────────────────────────────── */
 
   if (loading && !data) {
@@ -694,155 +619,13 @@ export default function PatientExplorer({
           </div>
         </div>
 
-        <div className="explorer-filter-bar">
-          <div className="explorer-filter-field">
-            <span className="explorer-filter-label-row">
-              <MetricLabel
-                text="Gender"
-                metricId="explorer.filter.gender"
-                className="explorer-filter-label-metric"
-              />
-            </span>
-            <select
-              id="explorer-gender-filter"
-              className="explorer-filter-select"
-              value={genderFilter}
-              onChange={(e) => onFiltersChange({...filters, gender: e.target.value})}
-            >
-              <option value="ALL">All</option>
-              <option value="K">Female</option>
-              <option value="E">Male</option>
-            </select>
-          </div>
-
-          <div className="explorer-filter-field">
-            <span className="explorer-filter-label-row">
-              <MetricLabel
-                text="Doctor"
-                metricId="explorer.filter.doctor_code"
-                className="explorer-filter-label-metric"
-              />
-            </span>
-            <select
-              id="explorer-doctor-filter"
-              className="explorer-filter-select"
-              value={doctorFilter}
-              onChange={(e) => onFiltersChange({...filters, doctor: e.target.value})}
-            >
-              <option value="ALL">All</option>
-              {doctorOptions.map((doctorCode) => (
-                <option key={doctorCode} value={doctorCode}>
-                  {doctorCode}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="explorer-filter-field explorer-filter-field-range">
-            <span className="explorer-filter-label-row">
-              <MetricLabel
-                text="Age"
-                metricId="explorer.filter.age_range"
-                className="explorer-filter-label-metric"
-              />
-            </span>
-            <div className="explorer-filter-range">
-              <input
-                id="explorer-age-min"
-                className="explorer-filter-input"
-                type="number"
-                min={0}
-                value={ageMinInput}
-                onChange={(e) => onFiltersChange({...filters, ageMin: e.target.value})}
-                placeholder="Min"
-              />
-              <span className="explorer-filter-range-sep">-</span>
-              <input
-                id="explorer-age-max"
-                className="explorer-filter-input"
-                type="number"
-                min={0}
-                value={ageMaxInput}
-                onChange={(e) => onFiltersChange({...filters, ageMax: e.target.value})}
-                placeholder="Max"
-              />
-            </div>
-          </div>
-
-          <div className="explorer-filter-field explorer-filter-field-range">
-            <span className="explorer-filter-label-row">
-              <MetricLabel
-                text="Weight (kg)"
-                metricId="explorer.filter.weight_range"
-                className="explorer-filter-label-metric"
-              />
-            </span>
-            <div className="explorer-filter-range">
-              <input
-                id="explorer-weight-min"
-                className="explorer-filter-input"
-                type="number"
-                min={0}
-                step="0.1"
-                value={weightMinInput}
-                onChange={(e) => onFiltersChange({...filters, weightMin: e.target.value})}
-                placeholder="Min"
-              />
-              <span className="explorer-filter-range-sep">-</span>
-              <input
-                id="explorer-weight-max"
-                className="explorer-filter-input"
-                type="number"
-                min={0}
-                step="0.1"
-                value={weightMaxInput}
-                onChange={(e) => onFiltersChange({...filters, weightMax: e.target.value})}
-                placeholder="Max"
-              />
-            </div>
-          </div>
-
-          <div className="explorer-filter-field explorer-filter-field-comorb">
-            <span className="explorer-filter-label-row">
-              <MetricLabel
-                text="Comorbidities"
-                metricId="explorer.filter.comorbidities"
-                className="explorer-filter-label-metric"
-              />
-            </span>
-            <div className="explorer-filter-checkboxes">
-              {COMORBIDITY_CONDITION_OPTIONS.map((option) => {
-                const inputId = `explorer-comorb-${option.key}`;
-                return (
-                  <label key={option.key} htmlFor={inputId} className="explorer-filter-checkbox-label">
-                    <input
-                      id={inputId}
-                      type="checkbox"
-                      checked={selectedComorbidityConditions.includes(option.key)}
-                      onChange={() => toggleComorbidityCondition(option.key)}
-                    />
-                    <span>{option.label}</span>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-
-          <button
-            type="button"
-            className="explorer-filter-reset"
-            onClick={resetFilters}
-          >
-            Reset Filters
-          </button>
-        </div>
-
-        {hasFilterValidationError && (
-          <p className="explorer-filter-message explorer-filter-message-error">
-            Invalid filter input: use numeric bounds and keep min less than or equal to max.
-          </p>
-        )}
-        {!hasFilterValidationError && filteredPatients.length === 0 && !loadingPatients && (
+        <PatientFilterBar
+          filters={filters}
+          onFiltersChange={onFiltersChange}
+          patientMeta={patientMeta}
+          idPrefix="explorer"
+        />
+        {filteredPatients.length === 0 && !loadingPatients && (
           <p className="explorer-filter-message">
             No patients match current filters.
           </p>

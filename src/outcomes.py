@@ -606,3 +606,64 @@ def predict_care_duration_narrative(profile: PatientOutcomeProfile) -> str:
         )
 
     return "\n".join(lines)
+
+
+def predict_eci_narrative(
+    eci_data: dict, profile: PatientOutcomeProfile | None = None
+) -> str:
+    """
+    Generate a clinical narrative for the Expected Cost Intensity (ECI) of a patient.
+    Rule-based interpretation of the ECI score and its 4 percentile-ranked components.
+    """
+    pid = eci_data.get("patient_id", "Unknown")
+    score = eci_data.get("eci_score")
+    rating = eci_data.get("eci_rating", "N/A")
+    label = eci_data.get("eci_rating_label", "")
+
+    if score is None:
+        return f"Patient {pid} — ECI data not available."
+
+    lines = [f"Patient {pid} — Expected Cost Intensity: {score:.0f}/100 ({rating})"]
+    if label:
+        lines[0] += f" — {label}"
+
+    # Component breakdown
+    components = [
+        ("Visit Intensity", eci_data.get("visit_intensity")),
+        ("Medication Burden", eci_data.get("med_burden")),
+        ("Diagnostic Intensity", eci_data.get("diagnostic_intensity")),
+        ("Clinical Trajectory", eci_data.get("trajectory_cost")),
+    ]
+
+    # Find dominant component
+    scored = [(name, val) for name, val in components if val is not None]
+    if scored:
+        dominant = max(scored, key=lambda x: x[1])
+        lines.append(
+            f"Dominant cost driver: {dominant[0]} (percentile score {dominant[1]:.0f}/100)"
+        )
+
+    # Interpret each component
+    for name, val in components:
+        if val is None:
+            continue
+        if val >= 75:
+            level = "very high"
+        elif val >= 50:
+            level = "elevated"
+        elif val >= 25:
+            level = "moderate"
+        else:
+            level = "low"
+        lines.append(f"{name}: {val:.0f}/100 ({level} relative to cohort)")
+
+    # Add profile context if available
+    if profile is not None:
+        if profile.total_visits is not None:
+            lines.append(f"Total visits on record: {profile.total_visits}")
+        if profile.total_care_days is not None:
+            lines.append(
+                f"Total care span: {profile.total_care_days:.0f} days ({profile.total_care_days / 365:.1f} years)"
+            )
+
+    return "\n".join(lines)

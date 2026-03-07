@@ -46,6 +46,7 @@ from .outcomes import (
     profiles_to_dataframe,
     compute_feature_correlations,
     predict_care_duration_narrative,
+    predict_eci_narrative,
 )
 from .validation import (
     ValidationResult,
@@ -98,6 +99,7 @@ __all__ = [
     "profiles_to_dataframe",
     "compute_feature_correlations",
     "predict_care_duration_narrative",
+    "predict_eci_narrative",
     "ValidationResult",
     "run_all_validations",
     "validation_summary_df",

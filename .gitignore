@@ -34,6 +34,11 @@ frontend/*.tsbuildinfo
 *.ods
 ACUHIT 2/
 
+# Cache / pipeline artifacts (sensitive patient data)
+.cache/
+*.ods#
+.~lock.*
+
 # Logs
 logs/
 *.log
@@ -42,7 +47,8 @@ logs/
 node_modules/
 package-lock.json
 
-
+# IDE / tooling
+.opencode/
 
 # Tasks
 tasks

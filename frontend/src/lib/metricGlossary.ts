@@ -74,7 +74,7 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
   },
   "cohort.rating_distribution": {
     id: "cohort.rating_distribution",
-    title: "Rating Distribution",
+    title: "Credit Risk Rating Distribution",
     definition: "Frequency histogram over credit-style risk ratings (AAA to B/CCC).",
     formula: "histogram(rating)",
     interpretation:

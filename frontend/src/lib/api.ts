@@ -5,6 +5,7 @@ import type {
   ValidationData,
   ChatMessage,
   PatientSearchResponse,
+  PatientMeta,
 } from "./types";
 
 function resolveApiBase(): string {
@@ -46,7 +47,7 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export async function getPatients(): Promise<{ patients: string[]; total: number }> {
+export async function getPatients(): Promise<{ patients: string[]; total: number; patient_meta: PatientMeta[] }> {
   return fetchJSON("/api/patients");
 }
 

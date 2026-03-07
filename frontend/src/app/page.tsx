@@ -139,9 +139,12 @@ export default function Home() {
         const pRes = await getPatients();
         if (cancelled) return;
         setPatients(pRes.patients);
+        if (pRes.patient_meta) {
+          setPatientMeta(pRes.patient_meta);
+        }
 
         setLoadingCohort(true);
-        const cRes = await getCohort();
+        const cRes = await getCohort({ sort_by: "data_completeness", order: "desc" });
         if (cancelled) return;
         setCohortData(cRes);
         setLoadingCohort(false);
@@ -309,7 +312,7 @@ export default function Home() {
   const handleCohortPageChange = useCallback(async (page: number) => {
     try {
       setLoadingCohort(true);
-      const cRes = await getCohort({ page });
+      const cRes = await getCohort({ page, sort_by: "data_completeness", order: "desc" });
       setCohortData(cRes);
     } catch (err) {
       console.error("Failed to fetch cohort page:", err);
