@@ -2,21 +2,20 @@
 validation.py
 Institutional benchmark validation for the Composite Health Index.
 
-This module validates our Health Index against three established clinical severity scores:
+This module validates our Health Index against established clinical severity scores:
   - SOFA (Sequential Organ Failure Assessment)
-  - NEWS2 (National Early Warning Score 2)
   - APACHE II (Acute Physiology and Chronic Health Evaluation II)
 
-For each benchmark, we run 3 Spearman rank-correlation experiments:
+Note: NEWS2 is excluded due to insufficient parameter coverage (3/7).
+
+For each benchmark, we run 2 Spearman rank-correlation experiments:
   1) Mean Health Index vs Mean benchmark score
   2) Mean Health Index vs Max benchmark score
-  3) Last Health Index vs Last benchmark score
 
 Expected direction: Negative (higher Health Index = healthier; higher severity score = sicker).
 
 Data availability:
   - SOFA:     4/6 organ systems  (Coagulation, Liver, Cardiovascular, Renal)
-  - NEWS2:    3/7 parameters     (SpO2, SBP, Pulse)
   - APACHE II: 7/12 APS params  (MAP, HR, Na, K, Creatinine, Hematocrit, WBC)
   - Missing parameters default to 0 (conservative lower-bound).
 """
@@ -45,7 +44,7 @@ class ValidationResult:
     conclusion: str
     clinical_meaning: str
     passed: bool
-    benchmark: str = ""  # "SOFA", "NEWS2", "APACHE II"
+    benchmark: str = ""  # "SOFA", "APACHE II"
     details: dict = field(default_factory=dict)
 
 
@@ -244,23 +243,13 @@ _BENCHMARK_SPECS = [
         "benchmark": "SOFA",
         "mean_col": "mean_sofa",
         "max_col": "max_sofa",
-        "last_col": "last_sofa",
         "full_name": "SOFA (Sequential Organ Failure Assessment)",
         "coverage": "4/6 organ systems",
-    },
-    {
-        "benchmark": "NEWS2",
-        "mean_col": "mean_news2",
-        "max_col": "max_news2",
-        "last_col": "last_news2",
-        "full_name": "NEWS2 (National Early Warning Score 2)",
-        "coverage": "3/7 parameters",
     },
     {
         "benchmark": "APACHE II",
         "mean_col": "mean_apache2",
         "max_col": "max_apache2",
-        "last_col": "last_apache2",
         "full_name": "APACHE II (Acute Physiology and Chronic Health Evaluation)",
         "coverage": "7/12 APS parameters",
     },
@@ -274,14 +263,14 @@ def _run_institutional_benchmarks(
     apache2_df: pd.DataFrame | None,
 ) -> list[ValidationResult]:
     """
-    Run 9 Spearman correlation experiments (3 per benchmark) comparing
-    Health Index against SOFA, NEWS2, and APACHE II severity scores.
+    Run 4 Spearman correlation experiments (2 per benchmark) comparing
+    Health Index against SOFA and APACHE II severity scores.
+    NEWS2 is excluded due to insufficient parameter coverage (3/7).
     """
     results: list[ValidationResult] = []
 
     score_dfs = {
         "SOFA": sofa_df,
-        "NEWS2": news2_df,
         "APACHE II": apache2_df,
     }
 
@@ -291,8 +280,8 @@ def _run_institutional_benchmarks(
 
         # Merge Health Index with institutional score
         if hi_df is None or hi_df.empty or score_df is None or score_df.empty:
-            # Create 3 unavailable results
-            for variant in ["Mean", "Max", "Last"]:
+            # Create 2 unavailable results
+            for variant in ["Mean", "Max"]:
                 results.append(
                     _build_unavailable_result(
                         experiment_name=f"Health Index vs {variant} {bm}",
@@ -328,17 +317,6 @@ def _run_institutional_benchmarks(
             )
         )
 
-        # Experiment 3: Last HI vs Last score
-        results.append(
-            _run_negative_correlation_experiment(
-                merged,
-                hi_col="last_hi_score",
-                institutional_col=spec["last_col"],
-                experiment_name=f"Health Index vs Last {bm}",
-                benchmark=bm,
-            )
-        )
-
     return results
 
 
@@ -356,16 +334,17 @@ def run_all_validations(
 
     Args:
       hi_df:      Per-patient Health Index summary with columns:
-                    patient_id, mean_hi_score, last_hi_score
+                    patient_id, mean_hi_score
       sofa_df:    Per-patient SOFA summary with columns:
-                    patient_id, mean_sofa, max_sofa, last_sofa, n_visits
-      news2_df:   Per-patient NEWS2 summary with columns:
-                    patient_id, mean_news2, max_news2, last_news2, n_visits
+                    patient_id, mean_sofa, max_sofa, n_visits
+      news2_df:   Per-patient NEWS2 summary (accepted for API compatibility,
+                    but NEWS2 experiments are excluded due to insufficient
+                    parameter coverage 3/7)
       apache2_df: Per-patient APACHE II summary with columns:
-                    patient_id, mean_apache2, max_apache2, last_apache2, n_visits
+                    patient_id, mean_apache2, max_apache2, n_visits
 
     Returns:
-      List of 9 ValidationResult objects (3 per benchmark).
+      List of 4 ValidationResult objects (2 per benchmark: SOFA, APACHE II).
     """
     return _run_institutional_benchmarks(hi_df, sofa_df, news2_df, apache2_df)
 

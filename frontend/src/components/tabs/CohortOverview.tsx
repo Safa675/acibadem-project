@@ -18,7 +18,6 @@ import type { CohortData, ScatterPoint } from "@/lib/types";
 import {
   RATING_COLORS,
   STATE_COLORS,
-  BADGE_CLASS,
   RISK_TIER_EMOJI,
   RISK_TIER_COLORS,
   CHART_COLORS,
@@ -31,6 +30,7 @@ import {
   getCohortSizeCue,
   getHealthScoreCue,
   getMeanECICue,
+  getMeanCompositeCue,
   getCriticalCountCue,
   getRxIntensityCue,
   getDataCompletenessCue,
@@ -210,6 +210,7 @@ export default function CohortOverview({ data, loading, onPageChange }: Props) {
   const cohortSizeCue = getCohortSizeCue(kpi.n_patients);
   const meanScoreCue = getHealthScoreCue(kpi.mean_score);
   const meanEciCue = getMeanECICue(kpi.mean_eci);
+  const meanCompositeCue = getMeanCompositeCue(kpi.mean_composite ?? 0);
   const criticalCue = getCriticalCountCue(kpi.n_critical);
   const rxIntensityCue = getRxIntensityCue(kpi.total_rx, kpi.n_patients);
   const dataCompletenessCue = getDataCompletenessCue(kpi.mean_data_completeness ?? 50);
@@ -217,11 +218,12 @@ export default function CohortOverview({ data, loading, onPageChange }: Props) {
   const animatedPatients = useCountUp(kpi.n_patients, 1050, 0, !!data && !loading);
   const animatedMeanScore = useCountUp(kpi.mean_score, 1150, 1, !!data && !loading);
   const animatedMeanEci = useCountUp(kpi.mean_eci, 1000, 1, !!data && !loading);
+  const animatedMeanComposite = useCountUp(kpi.mean_composite ?? 0, 1050, 1, !!data && !loading);
   const animatedCritical = useCountUp(kpi.n_critical, 1000, 0, !!data && !loading);
   const animatedTotalRx = useCountUp(kpi.total_rx, 1100, 0, !!data && !loading);
   const animatedCompleteness = useCountUp(kpi.mean_data_completeness ?? 50, 1000, 1, !!data && !loading);
 
-  const kpiReveal = useStaggeredReveal(6, { stepMs: 100, threshold: 0.2 });
+  const kpiReveal = useStaggeredReveal(7, { stepMs: 100, threshold: 0.2 });
   const chartReveal = useStaggeredReveal(3, { baseDelayMs: 80, stepMs: 150, threshold: 0.15 });
 
   const kpiCards = [
@@ -236,6 +238,12 @@ export default function CohortOverview({ data, loading, onPageChange }: Props) {
       label: "Mean Health Score",
       metricId: "cohort.mean_health_score",
       cue: meanScoreCue,
+    },
+    {
+      value: animatedMeanComposite.toFixed(1),
+      label: "Mean Composite Score",
+      metricId: "patient.summary.composite_score",
+      cue: meanCompositeCue,
     },
     {
       value: animatedMeanEci.toFixed(1),
@@ -285,7 +293,7 @@ export default function CohortOverview({ data, loading, onPageChange }: Props) {
       {/* ── KPI Cards ── */}
       <div
         className="kpi-grid"
-        style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 16, marginBottom: 24 }}
+        style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 16, marginBottom: 24 }}
         aria-live="polite"
         aria-atomic="true"
       >
@@ -533,7 +541,6 @@ export default function CohortOverview({ data, loading, onPageChange }: Props) {
           <thead>
             <tr>
               <th>Patient ID</th>
-              <th>Rating</th>
               <th>
                 <span className="section-label-with-info">
                   Composite Score
@@ -549,7 +556,6 @@ export default function CohortOverview({ data, loading, onPageChange }: Props) {
                 </span>
               </th>
               <th>ECI Rating</th>
-              <th>Data Quality</th>
               <th>Rx Count</th>
             </tr>
           </thead>
@@ -557,39 +563,11 @@ export default function CohortOverview({ data, loading, onPageChange }: Props) {
             {sortedComposites.map((row) => (
               <tr key={row.patient_id}>
                 <td>{row.patient_id}</td>
-                <td>
-                  <span className={`badge ${BADGE_CLASS[row.rating] ?? ""}`}>
-                    {row.rating}
-                  </span>
-                </td>
                 <td>{row.composite_score.toFixed(2)}</td>
                 <td>{row.health_index_score.toFixed(1)}</td>
                 <td>{row.nlp_score.toFixed(1)}</td>
                 <td>{row.eci_score != null ? row.eci_score.toFixed(1) : "—"}</td>
                 <td>{row.eci_rating ?? "—"}</td>
-                <td>
-                  <span
-                    className="badge"
-                    style={{
-                      background:
-                        (row.data_completeness ?? 50) >= 80
-                          ? "rgba(46,204,113,0.15)"
-                          : (row.data_completeness ?? 50) >= 50
-                            ? "rgba(250,204,21,0.15)"
-                            : "rgba(239,68,68,0.15)",
-                      color:
-                        (row.data_completeness ?? 50) >= 80
-                          ? "#2ECC71"
-                          : (row.data_completeness ?? 50) >= 50
-                            ? "#FACC15"
-                            : "#EF4444",
-                    }}
-                  >
-                    {row.data_completeness != null
-                      ? `${row.data_completeness.toFixed(0)}%`
-                      : "—"}
-                  </span>
-                </td>
                 <td>{row.n_prescriptions ?? "—"}</td>
               </tr>
             ))}

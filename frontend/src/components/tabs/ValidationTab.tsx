@@ -30,14 +30,6 @@ const BENCHMARK_INFO: Record<
     missing: ["Respiratory (PaO2/FiO2)", "Neurological (GCS)"],
     reference: "Vincent et al. 1996 / Singer et al. 2016",
   },
-  NEWS2: {
-    label: "NEWS2",
-    fullName: "National Early Warning Score 2",
-    coverage: "3/7",
-    available: ["SpO2 (Scale 1)", "Systolic BP", "Pulse"],
-    missing: ["Respiratory Rate", "Temperature", "Supplemental O2", "Consciousness (ACVPU)"],
-    reference: "Royal College of Physicians 2017",
-  },
   "APACHE II": {
     label: "APACHE II",
     fullName: "Acute Physiology and Chronic Health Evaluation II",
@@ -48,7 +40,7 @@ const BENCHMARK_INFO: Record<
   },
 };
 
-const BENCHMARK_ORDER = ["SOFA", "NEWS2", "APACHE II"] as const;
+const BENCHMARK_ORDER = ["SOFA", "APACHE II"] as const;
 
 /* ---------- Metric Card ---------- */
 
@@ -416,7 +408,7 @@ export default function ValidationTab({ data, loading }: Props) {
             <ul className="mt-2 space-y-1.5 text-sm leading-relaxed text-slate-300">
               <li>
                 <strong className="text-slate-200">Partial parameters:</strong>{" "}
-                SOFA uses 4/6 organ systems, NEWS2 uses 3/7 parameters, APACHE II uses 7/12 APS variables.
+                SOFA uses 4/6 organ systems, APACHE II uses 7/12 APS variables.
                 Missing components default to 0, biasing all institutional scores downward (conservative).
               </li>
               <li>
@@ -426,7 +418,7 @@ export default function ValidationTab({ data, loading }: Props) {
               </li>
               <li>
                 <strong className="text-slate-200">Outpatient bias:</strong>{" "}
-                SOFA and APACHE II are designed for ICU settings. Outpatient SOFA scores may cluster
+                SOFA and APACHE II are designed for ICU settings. Outpatient scores may cluster
                 near zero, making correlation undefined (constant-input guard applied).
               </li>
             </ul>

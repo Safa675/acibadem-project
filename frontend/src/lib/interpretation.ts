@@ -46,6 +46,13 @@ export function getECICue(score: number): MetricCue {
   return cue("Minimal Cost tier (AAA)", "good", "Lowest expected cost intensity in cohort.");
 }
 
+export function getMeanCompositeCue(score: number): MetricCue {
+  if (score >= 85) return cue("High composite quality", "good", "Multimodal cohort profile is favorable.");
+  if (score >= 70) return cue("Intermediate quality", "warn", "Track for downward drift across the cohort.");
+  if (score >= 55) return cue("At-risk profile", "warn", "Intervention prioritization may be needed.");
+  return cue("High composite risk", "bad", "Urgent prioritization recommended across the cohort.");
+}
+
 export function getMeanECICue(meanEci: number): MetricCue {
   if (meanEci >= 65) return cue("High cohort cost exposure", "bad", `Mean ECI ${meanEci.toFixed(1)} — elevated resource demand across the cohort.`);
   if (meanEci >= 50) return cue("Moderate cohort cost", "warn", `Mean ECI ${meanEci.toFixed(1)} — typical distribution expected.`);

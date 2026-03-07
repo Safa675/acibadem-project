@@ -8,8 +8,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "ILAY",
-  description: "AI Clinical Risk Intelligence",
+  title: "ILAY | Clinical Risk Intelligence",
+  description: "AI-Powered Clinical Risk Intelligence Platform — ACUHIT 2026",
 };
 
 export const viewport: Viewport = {

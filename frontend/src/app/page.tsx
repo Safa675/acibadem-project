@@ -11,7 +11,6 @@ import type {
   PatientMeta,
   PatientFilters,
 } from "@/lib/types";
-import { TAB_BACKGROUNDS } from "@/lib/constants";
 const CohortOverview = dynamic(() => import("@/components/tabs/CohortOverview"), {
   loading: () => <div className="loading-state"><div className="loading-spinner" /></div>,
 });
@@ -144,7 +143,7 @@ export default function Home() {
         }
 
         setLoadingCohort(true);
-        const cRes = await getCohort({ sort_by: "data_completeness", order: "desc" });
+        const cRes = await getCohort({ sort_by: "data_completeness", order: "desc", per_page: 20 });
         if (cancelled) return;
         setCohortData(cRes);
         setLoadingCohort(false);
@@ -312,7 +311,7 @@ export default function Home() {
   const handleCohortPageChange = useCallback(async (page: number) => {
     try {
       setLoadingCohort(true);
-      const cRes = await getCohort({ page, sort_by: "data_completeness", order: "desc" });
+      const cRes = await getCohort({ page, sort_by: "data_completeness", order: "desc", per_page: 20 });
       setCohortData(cRes);
     } catch (err) {
       console.error("Failed to fetch cohort page:", err);
@@ -350,19 +349,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!showDashboard) return;
-
-    const preloaders = TAB_BACKGROUNDS.map((src) => {
-      const img = new Image();
-      img.decoding = "async";
-      img.src = src;
-      return img;
-    });
-
-    return () => {
-      preloaders.forEach((img) => {
-        img.src = "";
-      });
-    };
+    // Background is now pure CSS gradient — no image preloading needed
   }, [showDashboard]);
 
   // ── Error screen ───────────────────────────────────────────────────────
@@ -395,10 +382,7 @@ export default function Home() {
   return (
     <div className="dashboard-enter">
       {/* ── Background overlay ──────────────────────────────────────────── */}
-      <div
-        className="bg-overlay"
-        style={{ backgroundImage: `url(${TAB_BACKGROUNDS[activeTab]})` }}
-      />
+      <div className="bg-overlay" />
 
       {/* ── Main content (above overlay) ────────────────────────────────── */}
       <div className="app-shell">
@@ -408,7 +392,7 @@ export default function Home() {
           <div className="app-brand">
             <img
               src="/images/j2.png"
-              alt="ILAY Avatar"
+              alt="ILAY Logo"
               className="app-brand-avatar"
             />
             <div>
@@ -505,6 +489,7 @@ export default function Home() {
                   selectedPatientId={selectedPatientId}
                   patients={patients}
                   filteredPatients={filteredPatients}
+                  patientMeta={patientMeta}
                   onPatientChange={handlePatientChange}
                   onPatientSelect={handlePatientSelect}
                   loadingPatients={loadingPatients}
@@ -524,7 +509,7 @@ export default function Home() {
         </main>
 
         <footer className="app-footer">
-          Built by Team ILAY · ACUHIT 2026 · Acibadem University
+          ILAY &mdash; AI Clinical Risk Intelligence &mdash; ACUHIT 2026 &mdash; Acibadem University
         </footer>
       </div>
 

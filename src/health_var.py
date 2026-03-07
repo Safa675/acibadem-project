@@ -79,6 +79,9 @@ def _fallback_monte_carlo(
     Simple historical bootstrap Monte Carlo.
     Resamples historical arithmetic returns to simulate future paths.
     Uses arithmetic (not log) returns to avoid explosive paths near zero.
+
+    For small samples (few returns), applies Bayesian shrinkage toward zero
+    to prevent unreliable extreme projections from 1-2 observed returns.
     """
     rng = np.random.default_rng(seed)
     arr = np.array(scores, dtype=float)
@@ -96,11 +99,25 @@ def _fallback_monte_carlo(
         v = arr[-1]
         return {f"p{k:02d}": v for k in [5, 25, 50, 75, 95]}
 
+    # Bayesian shrinkage for small samples: blend observed returns with
+    # a zero-return prior (stable health assumption). This prevents a single
+    # large negative return from producing catastrophic MC projections.
+    # Shrinkage weight: n_obs / (n_obs + prior_strength)
+    # With prior_strength=3, a patient with 1 return gets 25% weight on data,
+    # with 3 returns gets 50%, with 10+ returns gets ~75%+ (minimal shrinkage).
+    n_obs = len(returns)
+    prior_strength = 3
+    data_weight = n_obs / (n_obs + prior_strength)
+    shrunk_returns = returns * data_weight  # shrink toward 0
+
+    # Also cap individual return magnitudes to prevent compounding explosion
+    shrunk_returns = np.clip(shrunk_returns, -0.5, 0.5)
+
     current = arr[-1]
 
     # Vectorized MC: draw all random returns at once as a (iterations, horizon) matrix,
     # then cumprod along the horizon axis. ~10-50x faster than the Python loop.
-    draws = rng.choice(returns, size=(iterations, horizon))
+    draws = rng.choice(shrunk_returns, size=(iterations, horizon))
     paths = current * np.cumprod(1.0 + draws, axis=1)
     terminals_arr = np.clip(paths[:, -1], 0, 100)
 

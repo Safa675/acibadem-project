@@ -32,6 +32,15 @@ from .patient_regime import (
 from .health_var import compute_health_var, compute_all_patient_vars, HealthVaRResult
 from .fusion import compute_composite_score, compute_all_composites, CompositeRiskScore
 from .eci import compute_all_eci, ECIResult, ECI_TIERS
+from .sut_pricing import (
+    estimate_patient_sut_costs,
+    compute_all_sut_costs,
+    estimate_cohort_sut_summary,
+    PatientSUTEstimate,
+    SUTCostBreakdown,
+    SUT_LAB_PRICES,
+    COST_TIERS,
+)
 from .visualizer import (
     plot_regime_timeline,
     plot_health_var_fan,
@@ -45,7 +54,6 @@ from .outcomes import (
     build_all_outcome_profiles,
     profiles_to_dataframe,
     compute_feature_correlations,
-    predict_care_duration_narrative,
     predict_eci_narrative,
 )
 from .validation import (
@@ -88,6 +96,13 @@ __all__ = [
     "compute_all_eci",
     "ECIResult",
     "ECI_TIERS",
+    "estimate_patient_sut_costs",
+    "compute_all_sut_costs",
+    "estimate_cohort_sut_summary",
+    "PatientSUTEstimate",
+    "SUTCostBreakdown",
+    "SUT_LAB_PRICES",
+    "COST_TIERS",
     "plot_regime_timeline",
     "plot_health_var_fan",
     "plot_nlp_heatmap",
@@ -98,7 +113,6 @@ __all__ = [
     "build_all_outcome_profiles",
     "profiles_to_dataframe",
     "compute_feature_correlations",
-    "predict_care_duration_narrative",
     "predict_eci_narrative",
     "ValidationResult",
     "run_all_validations",

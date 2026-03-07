@@ -4,6 +4,7 @@ export interface KPI {
   n_patients: number;
   mean_score: number;
   mean_eci: number;
+  mean_composite?: number;
   n_critical: number;
   total_rx: number;
   mean_data_completeness?: number;
@@ -76,6 +77,7 @@ export interface CohortData {
   regime_distribution: Record<string, number>;
   scatter_data: ScatterPoint[];
   scatter_total?: number;
+  sut_summary?: SUTCohortSummary;
 }
 
 export interface PaginationMeta {
@@ -163,6 +165,10 @@ export interface PatientSummary {
   eci_med_burden: number | null;
   eci_diagnostic_intensity: number | null;
   eci_trajectory_cost: number | null;
+  sut_cost_min: number | null;
+  sut_cost_max: number | null;
+  sut_cost_mid: number | null;
+  sut_cost_tier: string | null;
   age: number | null;
   sex: string | null;
   n_comorbidities: number;
@@ -194,6 +200,47 @@ export interface ECI {
   trajectory_cost: number | null;
 }
 
+export interface SUTCostRange {
+  min: number;
+  max: number;
+}
+
+export interface SUTCostBreakdown {
+  lab: SUTCostRange;
+  visit: SUTCostRange;
+  rx: SUTCostRange;
+  procedure: SUTCostRange;
+}
+
+export interface SUTCostEstimate {
+  cost_min: number;
+  cost_max: number;
+  cost_mid: number;
+  cost_tier: string;
+  cost_tier_label: string;
+  breakdown: SUTCostBreakdown;
+  n_lab_tests: number;
+  n_visits: number;
+  n_prescriptions: number;
+  n_procedures: number;
+}
+
+export interface SUTCohortSummary {
+  n_patients: number;
+  total_cost_min: number;
+  total_cost_max: number;
+  total_cost_mid: number;
+  mean_cost_mid: number;
+  median_cost_mid: number;
+  tier_distribution: Record<string, number>;
+  category_totals: {
+    lab: SUTCostRange;
+    visit: SUTCostRange;
+    rx: SUTCostRange;
+    procedure: SUTCostRange;
+  };
+}
+
 export interface FeatureBar {
   feature: string;
   value: number;
@@ -220,6 +267,7 @@ export interface OutcomeData {
   patient_percentile: number | null;
   cohort_total: number;
   feature_correlations: FeatureCorrelation[];
+  sut_cost: SUTCostEstimate | null;
 }
 
 export interface ValidationExperiment {

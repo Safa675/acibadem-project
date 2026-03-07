@@ -67,10 +67,10 @@ export const ECI_RATING_LABELS: Record<string, string> = {
 };
 
 export const TAB_BACKGROUNDS = [
-  "/images/Gemini_Generated_Image_e7z0jse7z0jse7z0.webp",
-  "/images/Gemini_Generated_Image_unlwgkunlwgkunlw.webp",
-  "/images/j.webp",
-  "/images/Gemini_Generated_Image_o6ulu3o6ulu3o6ul.webp",
+  "",
+  "",
+  "",
+  "",
 ];
 
 export const CHART_COLORS = {

@@ -908,6 +908,109 @@ export default function PatientExplorer({
         </div>
       )}
 
+      {/* ── 6a. NLP Scoring Overview Card ─────────────────────────────── */}
+      {data.nli_scores.length > 0 && (() => {
+        // Aggregate per-source statistics
+        const sourceStats: Record<string, { sum: number; count: number; scores: number[] }> = {};
+        for (const row of data.nli_scores) {
+          if (!sourceStats[row.source]) sourceStats[row.source] = { sum: 0, count: 0, scores: [] };
+          sourceStats[row.source].sum += row.nli_score;
+          sourceStats[row.source].count += 1;
+          sourceStats[row.source].scores.push(row.nli_score);
+        }
+        const sourceEntries = Object.entries(sourceStats)
+          .map(([source, s]) => ({ source, avg: s.sum / s.count, count: s.count }))
+          .sort((a, b) => a.avg - b.avg); // worst first
+
+        const overallAvg = data.nli_scores.reduce((a, r) => a + r.nli_score, 0) / data.nli_scores.length;
+        const nVisits = data.nlp_bars.length;
+        const nTexts = data.nli_scores.length;
+
+        // Trend: compare first half vs second half
+        const sorted = [...data.nlp_bars].sort((a, b) => a.date.localeCompare(b.date));
+        const mid = Math.floor(sorted.length / 2);
+        const firstHalf = sorted.slice(0, Math.max(1, mid));
+        const secondHalf = sorted.slice(Math.max(1, mid));
+        const avgFirst = firstHalf.reduce((a, r) => a + r.nlp_composite, 0) / firstHalf.length;
+        const avgSecond = secondHalf.reduce((a, r) => a + r.nlp_composite, 0) / secondHalf.length;
+        const trendDiff = avgSecond - avgFirst;
+        const trendLabel = sorted.length < 2 ? "Insufficient data" : trendDiff > 0.05 ? "Improving" : trendDiff < -0.05 ? "Declining" : "Stable";
+        const trendColor = sorted.length < 2 ? "#9db3cc" : trendDiff > 0.05 ? "#2ECC71" : trendDiff < -0.05 ? "#E74C3C" : "#F39C12";
+
+        const barWidth = (score: number) => `${Math.max(2, Math.abs(score) * 100)}%`;
+        const barColor = (score: number) => score > 0.05 ? "#2ECC71" : score < -0.05 ? "#E74C3C" : "#F39C12";
+
+        return (
+          <div className="frost-panel p-5">
+            <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-300">
+              <span className="section-label-with-info">
+                NLP Scoring Overview
+                <InfoTooltip metricId="patient.nlp.visit_signal" />
+              </span>
+            </h3>
+
+            {/* Summary row */}
+            <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="frost-panel flex flex-col items-center px-3 py-3">
+                <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500">Overall Score</span>
+                <span className="mt-1 text-lg font-bold" style={{ color: barColor(overallAvg) }}>
+                  {overallAvg.toFixed(3)}
+                </span>
+              </div>
+              <div className="frost-panel flex flex-col items-center px-3 py-3">
+                <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500">Visits Scored</span>
+                <span className="mt-1 text-lg font-bold text-slate-200">{nVisits}</span>
+              </div>
+              <div className="frost-panel flex flex-col items-center px-3 py-3">
+                <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500">Texts Analyzed</span>
+                <span className="mt-1 text-lg font-bold text-slate-200">{nTexts}</span>
+              </div>
+              <div className="frost-panel flex flex-col items-center px-3 py-3">
+                <span className="text-[10px] font-medium uppercase tracking-wider text-slate-500">Trend</span>
+                <span className="mt-1 text-lg font-bold" style={{ color: trendColor }}>{trendLabel}</span>
+              </div>
+            </div>
+
+            {/* Per-source breakdown */}
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Per-Source Average Score</h4>
+            <div className="space-y-2">
+              {sourceEntries.map(({ source, avg, count }) => (
+                <div key={source} className="flex items-center gap-3">
+                  <span className="w-28 shrink-0 truncate text-xs text-slate-400" title={source}>{source}</span>
+                  <div className="relative flex-1 h-5 rounded bg-white/5 overflow-hidden">
+                    {/* Center line at 0 */}
+                    <div className="absolute left-1/2 top-0 h-full w-px bg-white/20" />
+                    {/* Bar */}
+                    <div
+                      className="absolute top-0.5 h-4 rounded"
+                      style={{
+                        width: barWidth(avg),
+                        background: barColor(avg),
+                        opacity: 0.8,
+                        ...(avg >= 0
+                          ? { left: "50%" }
+                          : { right: "50%" }),
+                      }}
+                    />
+                  </div>
+                  <span className="w-14 shrink-0 text-right text-xs font-semibold" style={{ color: barColor(avg) }}>
+                    {avg.toFixed(3)}
+                  </span>
+                  <span className="w-8 shrink-0 text-right text-[10px] text-slate-500">{count}x</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Scale legend */}
+            <div className="mt-3 flex items-center justify-between text-[10px] text-slate-500">
+              <span>-1.0 (Deterioration)</span>
+              <span>0.0 (Neutral)</span>
+              <span>+1.0 (Recovery)</span>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── 6. NLP Bar Chart ─────────────────────────────────────────── */}
       {data.nlp_bars.length > 0 && (
         <div

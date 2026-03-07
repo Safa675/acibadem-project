@@ -13,13 +13,14 @@ import {
   ResponsiveContainer,
   LabelList,
 } from "recharts";
-import type { OutcomeData, PatientFilters } from "@/lib/types";
+import type { OutcomeData, PatientFilters, PatientMeta } from "@/lib/types";
 import { ACCENT, CHART_COLORS, ECI_RATING_COLORS } from "@/lib/constants";
 import InfoTooltip from "@/components/ui/InfoTooltip";
 import MetricCue from "@/components/ui/MetricCue";
 import { getECICue } from "@/lib/interpretation";
 import useStaggeredReveal from "@/hooks/useStaggeredReveal";
 import PatientSearch from "@/components/ui/PatientSearch";
+import PatientFilterBar from "@/components/ui/PatientFilterBar";
 
 interface Props {
   data: OutcomeData | null;
@@ -28,6 +29,7 @@ interface Props {
   selectedPatientId: string | null;
   patients: string[];
   filteredPatients: string[];
+  patientMeta: PatientMeta[];
   onPatientChange: (e: ChangeEvent<HTMLSelectElement>) => void;
   onPatientSelect: (patientId: string | null) => void;
   loadingPatients: boolean;
@@ -191,7 +193,7 @@ function NarrativePanel({ narrative }: { narrative: string }) {
   return (
     <div className="frost-panel p-5">
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-300">
-        Clinical Assessment Narrative
+        ECI Assessment Narrative
       </h3>
       <div className="space-y-1.5 text-sm leading-relaxed text-slate-300">
         {lines.map((line, i) => {
@@ -248,6 +250,7 @@ export default function OutcomePredictor({
   selectedPatientId,
   patients,
   filteredPatients,
+  patientMeta,
   onPatientChange,
   onPatientSelect,
   loadingPatients,
@@ -311,6 +314,12 @@ export default function OutcomePredictor({
             />
           </div>
         </div>
+        <PatientFilterBar
+          filters={filters}
+          onFiltersChange={onFiltersChange}
+          patientMeta={patientMeta}
+          idPrefix="outcome"
+        />
       </div>
 
       {switching && (

@@ -137,6 +137,19 @@ METRICS — FULL REFERENCE
      USE THESE NUMBERS when explaining the ECI.
    • 0 = minimal cost burden, 100 = maximum cost burden
 
+7) SUT Cost Estimate — Sağlık Uygulama Tebliği (Health Implementation Communiqué)
+   • Translates patient utilization into estimated cost ranges in Turkish Lira (TRY).
+   • SUT sets official min/max reimbursement prices for every medical procedure in Turkey.
+   • Four cost categories:
+     - Lab Costs: based on SUT prices for each lab test ordered
+     - Visit Costs: outpatient vs inpatient (using LOS) at SUT rates
+     - Prescription Costs: per-prescription cost range
+     - Procedure Costs: comorbidity-linked and ICD-10 diagnosis-linked procedures
+   • Output: cost_min (TRY), cost_max (TRY), cost_mid (midpoint estimate)
+   • Cost tiers: Very High (≥10,000), High (≥5,000), Moderate (≥2,000), Low (≥500), Minimal (<500)
+   • Finance analogy: bond pricing (bid/ask spread → SUT min/max range)
+   • This is what actuaries and private hospitals care most about — concrete TRY values.
+
 ═══════════════════════════════════════════
 COMORBIDITY COLUMNS IN DATA
 ═══════════════════════════════════════════
@@ -261,6 +274,7 @@ def build_patient_context(
     lab_df=None,
     rec_df=None,
     eci_data: dict | None = None,
+    sut_estimate=None,
 ) -> str:
     """Build a text block summarizing the current patient's data for the LLM."""
     lines = [f"\n═══ SELECTED PATIENT DATA: Patient #{patient_id} ═══"]
@@ -325,6 +339,19 @@ def build_patient_context(
             val = eci_data.get(key)
             if val is not None:
                 lines.append(f"    - {label}: {float(val):.1f}")
+
+    # SUT Cost Estimate (Sağlık Uygulama Tebliği)
+    if sut_estimate:
+        lines.append(f"\n💵 SUT COST ESTIMATE (Sağlık Uygulama Tebliği):")
+        lines.append(f"  Cost Range: {sut_estimate.cost_min:,.0f} – {sut_estimate.cost_max:,.0f} TRY")
+        lines.append(f"  Midpoint Estimate: {sut_estimate.cost_mid:,.0f} TRY")
+        lines.append(f"  Cost Tier: {sut_estimate.cost_tier}")
+        lines.append(f"  Breakdown:")
+        bd = sut_estimate.breakdown
+        lines.append(f"    - Lab Tests: {bd.lab_cost_min:,.0f} – {bd.lab_cost_max:,.0f} TRY ({sut_estimate.n_lab_tests} tests)")
+        lines.append(f"    - Visits: {bd.visit_cost_min:,.0f} – {bd.visit_cost_max:,.0f} TRY ({sut_estimate.n_visits} visits)")
+        lines.append(f"    - Prescriptions: {bd.rx_cost_min:,.0f} – {bd.rx_cost_max:,.0f} TRY ({sut_estimate.n_prescriptions} Rx)")
+        lines.append(f"    - Procedures: {bd.procedure_cost_min:,.0f} – {bd.procedure_cost_max:,.0f} TRY ({sut_estimate.n_procedures} procedures)")
 
     # Comorbidities detail
     if ana_df is not None:

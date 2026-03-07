@@ -39,7 +39,6 @@ from src import (
     build_all_outcome_profiles,
     profiles_to_dataframe,
     compute_feature_correlations,
-    predict_care_duration_narrative,
     predict_eci_narrative,
     run_all_validations,
     validation_summary_df,
@@ -51,6 +50,11 @@ from src.chatbot import (
 )
 from src.fusion import COMPOSITE_TIERS
 from src.eci import compute_all_eci, ECI_TIERS
+from src.sut_pricing import (
+    compute_all_sut_costs,
+    estimate_cohort_sut_summary,
+    estimate_patient_sut_costs,
+)
 from src.health_var import compute_all_vars_parallel
 from scripts.score_sofa import (
     compute_all_sofa,
@@ -588,6 +592,18 @@ def _load_pipeline() -> dict:
     )
     _log_rss("ECI complete")
 
+    # ── SUT Pricing (Sağlık Uygulama Tebliği cost estimation) ────────────
+    logger.info("Computing SUT cost estimates...")
+    t_sut = time.perf_counter()
+    sut_by_pid = compute_all_sut_costs(lab_df, ana_df, rec_df, sorted(all_series.keys()))
+    sut_cohort_summary = estimate_cohort_sut_summary(sut_by_pid)
+    logger.info(
+        "SUT costs computed for %d patients in %.1fs",
+        len(sut_by_pid),
+        time.perf_counter() - t_sut,
+    )
+    _log_rss("SUT pricing complete")
+
     # Compute per-patient data completeness (mean across all snapshots)
     # Must happen BEFORE all_snapshots is released.
     data_completeness_by_pid: dict[str, float] = {}
@@ -623,6 +639,11 @@ def _load_pipeline() -> dict:
     )
     mean_eci_cached = (
         round(float(eci_df["eci_score"].mean()), 1) if not eci_df.empty else 0.0
+    )
+    mean_composite_cached = (
+        round(float(composites["composite_score"].mean()), 1)
+        if not composites.empty
+        else 0.0
     )
     mean_data_completeness_cached = (
         round(sum(data_completeness_by_pid.values()) / len(data_completeness_by_pid), 3)
@@ -711,12 +732,15 @@ def _load_pipeline() -> dict:
         "nli_scores_cache": nli_scores_cache,
         "eci_df": eci_df,
         "eci_by_pid": eci_by_pid,
+        "sut_by_pid": sut_by_pid,
+        "sut_cohort_summary": sut_cohort_summary,
         # Pre-cached KPI scalars
         "kpi_n_patients": n_patients_cached,
         "kpi_total_rx": total_rx_cached,
         "kpi_mean_score": mean_score_cached,
         "kpi_n_high_risk": n_high_risk_cached,
         "kpi_mean_eci": mean_eci_cached,
+        "kpi_mean_composite": mean_composite_cached,
         "kpi_n_critical": n_critical_cached,
         "kpi_rating_dist": rating_dist_cached,
         "kpi_regime_dist": regime_dist_cached,
@@ -750,7 +774,11 @@ class ChatRequest(BaseModel):
 def get_patients():
     """Return total patient count + a small initial set of IDs with metadata."""
     ctx = _load_pipeline()
-    all_ids = sorted(ctx["regimes"].keys())
+    dc_by_pid = ctx.get("data_completeness_by_pid", {})
+    # Sort by data completeness descending so the default (first) patient has richest data
+    all_ids = sorted(
+        ctx["regimes"].keys(), key=lambda pid: dc_by_pid.get(str(pid), 0), reverse=True
+    )
     meta_lookup = {m["patient_id"]: m for m in ctx.get("patient_meta", [])}
     initial_ids = all_ids[:20]
     meta_list = [meta_lookup.get(pid, {"patient_id": pid}) for pid in all_ids]
@@ -768,7 +796,10 @@ def search_patients(
 ):
     """Fast prefix search on patient IDs — for search-as-you-type UI."""
     ctx = _load_pipeline()
-    all_ids = sorted(ctx["regimes"].keys())
+    dc_by_pid = ctx.get("data_completeness_by_pid", {})
+    all_ids = sorted(
+        ctx["regimes"].keys(), key=lambda pid: dc_by_pid.get(str(pid), 0), reverse=True
+    )
 
     if not q.strip():
         # No query: return first `limit` patients
@@ -833,6 +864,7 @@ def get_cohort(
     mean_score = ctx["kpi_mean_score"]
     n_high_risk = ctx["kpi_n_high_risk"]
     mean_eci = ctx["kpi_mean_eci"]
+    mean_composite = ctx["kpi_mean_composite"]
     n_critical = ctx["kpi_n_critical"]
     total_rx = ctx["kpi_total_rx"]
     mean_data_completeness = ctx["kpi_mean_data_completeness"]
@@ -970,6 +1002,7 @@ def get_cohort(
             "n_patients": n_patients,
             "mean_score": round(mean_score, 1),
             "mean_eci": mean_eci,
+            "mean_composite": mean_composite,
             "n_high_risk": n_high_risk,
             "n_critical": n_critical,
             "total_rx": total_rx,
@@ -984,6 +1017,7 @@ def get_cohort(
         "regime_distribution": regime_dist,
         "scatter_data": scatter_data,
         "scatter_total": scatter_total,
+        "sut_summary": ctx["sut_cohort_summary"],
     }
 
 
@@ -1030,6 +1064,9 @@ def get_patient(patient_id: str):
     # ECI data for this patient
     eci_data = ctx["eci_by_pid"].get(patient_id, {})
 
+    # SUT cost data for this patient
+    sut_estimate = ctx["sut_by_pid"].get(patient_id)
+
     summary = {
         "patient_id": patient_id,
         "rating": rating,
@@ -1044,6 +1081,10 @@ def get_patient(patient_id: str):
         "eci_med_burden": eci_data.get("med_burden"),
         "eci_diagnostic_intensity": eci_data.get("diagnostic_intensity"),
         "eci_trajectory_cost": eci_data.get("trajectory_cost"),
+        "sut_cost_min": sut_estimate.cost_min if sut_estimate else None,
+        "sut_cost_max": sut_estimate.cost_max if sut_estimate else None,
+        "sut_cost_mid": sut_estimate.cost_mid if sut_estimate else None,
+        "sut_cost_tier": sut_estimate.cost_tier if sut_estimate else None,
         "age": round(profile.age) if profile and profile.age else None,
         "sex": profile.sex if profile else None,
         "n_comorbidities": profile.n_comorbidities if profile else 0,
@@ -1253,8 +1294,11 @@ def get_patient_outcome(patient_id: str):
         else None,
     }
 
+    # SUT cost estimate for this patient
+    sut_estimate = ctx["sut_by_pid"].get(patient_id)
+
     # Narrative — ECI-based (replaces old CSI narrative)
-    narrative = predict_eci_narrative(eci_data, profile)
+    narrative = predict_eci_narrative(eci_data, profile, sut_estimate)
 
     # ECI component breakdown (replaces old CSI feature contributions)
     feature_bar = []
@@ -1322,6 +1366,39 @@ def get_patient_outcome(patient_id: str):
                 )
             )
 
+    # SUT cost response object
+    sut_cost = None
+    if sut_estimate:
+        sut_cost = {
+            "cost_min": sut_estimate.cost_min,
+            "cost_max": sut_estimate.cost_max,
+            "cost_mid": sut_estimate.cost_mid,
+            "cost_tier": sut_estimate.cost_tier,
+            "cost_tier_label": sut_estimate.cost_tier_label,
+            "breakdown": {
+                "lab": {
+                    "min": round(sut_estimate.breakdown.lab_cost_min, 2),
+                    "max": round(sut_estimate.breakdown.lab_cost_max, 2),
+                },
+                "visit": {
+                    "min": round(sut_estimate.breakdown.visit_cost_min, 2),
+                    "max": round(sut_estimate.breakdown.visit_cost_max, 2),
+                },
+                "rx": {
+                    "min": round(sut_estimate.breakdown.rx_cost_min, 2),
+                    "max": round(sut_estimate.breakdown.rx_cost_max, 2),
+                },
+                "procedure": {
+                    "min": round(sut_estimate.breakdown.procedure_cost_min, 2),
+                    "max": round(sut_estimate.breakdown.procedure_cost_max, 2),
+                },
+            },
+            "n_lab_tests": sut_estimate.n_lab_tests,
+            "n_visits": sut_estimate.n_visits,
+            "n_prescriptions": sut_estimate.n_prescriptions,
+            "n_procedures": sut_estimate.n_procedures,
+        }
+
     return {
         "eci": eci,
         "narrative": narrative,
@@ -1330,6 +1407,7 @@ def get_patient_outcome(patient_id: str):
         "patient_percentile": patient_percentile,
         "cohort_total": int(len(eci_df)) if not eci_df.empty else 0,
         "feature_correlations": corr_data,
+        "sut_cost": sut_cost,
     }
 
 
@@ -1438,6 +1516,7 @@ async def chat(req: ChatRequest):
             lab_df=ctx["lab_df"],
             rec_df=ctx["rec_df"],
             eci_data=ctx["eci_by_pid"].get(pid),
+            sut_estimate=ctx["sut_by_pid"].get(pid),
         )
         cohort_context = build_cohort_context(
             active_tab=req.active_tab,

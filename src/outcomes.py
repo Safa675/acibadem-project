@@ -550,70 +550,15 @@ def compute_feature_correlations(
     return result_df
 
 
-# ---------------------------------------------------------------------------
-# LOS / care duration prediction narrative
-# ---------------------------------------------------------------------------
-
-
-def predict_care_duration_narrative(profile: PatientOutcomeProfile) -> str:
-    """
-    Generate a clinical narrative for the predicted care burden of this patient.
-    Rule-based interpretation of the CSI score and dominant features.
-    """
-    lines = [
-        f"Patient {profile.patient_id} — Clinical Severity Index: {profile.csi_score:.0f}/100 ({profile.csi_tier})"
-    ]
-
-    # Dominant features
-    if profile.feature_contributions:
-        dominant = max(profile.feature_contributions.items(), key=lambda x: x[1])
-        lines.append(
-            f"Dominant risk factor: {dominant[0].replace('_', ' ').title()} (contributing {dominant[1]:.1f} points)"
-        )
-
-    if profile.health_score_trend < -1.0:
-        lines.append(
-            f"Health score declining at {abs(profile.health_score_trend):.1f} points/visit — active deterioration."
-        )
-    elif profile.health_score_trend > 1.0:
-        lines.append(
-            f"Health score improving at {profile.health_score_trend:.1f} points/visit — positive trajectory."
-        )
-    else:
-        lines.append("Health score trend: stable.")
-
-    if profile.critical_fraction > 0.3:
-        lines.append(
-            f"{profile.critical_fraction * 100:.0f}% of observations in Critical state — significant instability burden."
-        )
-
-    if profile.n_comorbidities >= 3:
-        lines.append(
-            f"{profile.n_comorbidities} comorbidities detected — complex multimorbidity profile."
-        )
-
-    if profile.prescription_velocity > 5:
-        lines.append(
-            f"High prescription intensity ({profile.prescription_velocity:.1f} Rx/month) — active pharmacological management."
-        )
-
-    if profile.total_visits is not None:
-        lines.append(f"Actual total visits on record: {profile.total_visits}")
-
-    if profile.total_care_days is not None:
-        lines.append(
-            f"Total care span: {profile.total_care_days:.0f} days ({profile.total_care_days / 365:.1f} years)"
-        )
-
-    return "\n".join(lines)
-
-
 def predict_eci_narrative(
-    eci_data: dict, profile: PatientOutcomeProfile | None = None
+    eci_data: dict,
+    profile: PatientOutcomeProfile | None = None,
+    sut_estimate=None,
 ) -> str:
     """
     Generate a clinical narrative for the Expected Cost Intensity (ECI) of a patient.
     Rule-based interpretation of the ECI score and its 4 percentile-ranked components.
+    Optionally includes SUT cost estimate if available.
     """
     pid = eci_data.get("patient_id", "Unknown")
     score = eci_data.get("eci_score")
@@ -665,5 +610,12 @@ def predict_eci_narrative(
             lines.append(
                 f"Total care span: {profile.total_care_days:.0f} days ({profile.total_care_days / 365:.1f} years)"
             )
+
+    # SUT cost estimate
+    if sut_estimate is not None:
+        lines.append(
+            f"SUT Cost Estimate: {sut_estimate.cost_min:,.0f} – {sut_estimate.cost_max:,.0f} TRY "
+            f"(midpoint: {sut_estimate.cost_mid:,.0f} TRY, tier: {sut_estimate.cost_tier})"
+        )
 
     return "\n".join(lines)

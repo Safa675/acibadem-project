@@ -204,7 +204,7 @@ export default function IlayChatbot({ patientId, activeTabLabel }: Props) {
           <div className="ilay-header">
             <img src={AVATAR_SRC} alt="Ilay avatar" className="ilay-header-avatar" />
             <div className="ilay-header-copy">
-              <div className="ilay-header-title">Ilay &mdash; Patient #{patientId}</div>
+              <div className="ilay-header-title">Ilay &mdash; Clinical Assistant</div>
               <div className="ilay-header-subtitle">AI Clinical Assistant · {activeTabLabel}</div>
             </div>
             <button onClick={() => setIsOpen(false)} aria-label="Close chat" className="ilay-close">

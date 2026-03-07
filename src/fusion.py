@@ -1,9 +1,9 @@
 """
 fusion.py
-Composite Risk Score — fuses lab/vital health index, NLP signal, and medication change frequency.
+Composite Risk Score — fuses lab/vital health index and NLP signal.
 
 Weights (evidence-based — see FUSION_WEIGHTS_EVIDENCE.md for full citations):
-  55% HealthIndex (lab + vital regime component)
+  70% HealthIndex (lab + vital regime component)
       - Labs + vitals are consistently the dominant modality in clinical prediction
         models (NEWS AUROC 0.867, eCART superior to MEWS across 5 hospitals).
         Rajkomar et al. 2018 (PMID: 31304302): structured data is the primary
@@ -14,14 +14,12 @@ Weights (evidence-based — see FUSION_WEIGHTS_EVIDENCE.md for full citations):
         importance analyses consistently attribute 20–35% of predictive information
         to clinical notes when combined with structured data. Captures clinical
         reasoning, subjective assessments, and context absent from structured fields.
-  15% Medication change velocity (from recete.ods)
-      - Polypharmacy meta-analysis (47 studies, PMID: 28784299): 31% increased
-        mortality risk. Graded dose-response relationship confirmed (PMC7609640).
-        Weight is conservative due to confounding by indication and partial overlap
-        with lab/vital signals that triggered prescribing changes.
+
+Medication change velocity is retained as a computed field for informational
+purposes but no longer contributes to the composite score (weight = 0).
 
 Output: CompositeRiskScore ∈ [0, 100]
-  100 = lowest risk (healthy, positive notes, no sudden med changes)
+  100 = lowest risk (healthy, positive notes)
   0   = highest risk
 
 This is the final "credit rating" per patient — the clinically communicable output.
@@ -35,17 +33,17 @@ import pandas as pd
 
 
 WEIGHTS = {
-    "health_index": 0.55,
+    "health_index": 0.70,
     "nlp": 0.30,
-    "med_changes": 0.15,
+    "med_changes": 0.00,
 }
 
 # Redistributed weights when NLP is skipped (ILAY_SKIP_NLP=1).
-# NLP's 30% is redistributed proportionally: 55/(55+15) = 78.6%, 15/(55+15) = 21.4%
+# When NLP is unavailable, 100% weight goes to health index.
 WEIGHTS_NO_NLP = {
-    "health_index": 0.786,
+    "health_index": 1.0,
     "nlp": 0.0,
-    "med_changes": 0.214,
+    "med_changes": 0.0,
 }
 
 # Risk tier boundaries for composite score
@@ -206,10 +204,9 @@ def compute_all_composites(
     """Compute composite scores for all patients. Returns ranked DataFrame.
 
     Uses **per-patient** NLP weight selection:
-    - Patients with a real NLP score (non-zero) use full weights (55/30/15).
-    - Patients without NLP data (score == 0.0) use redistributed weights
-      (78.6% health, 0% NLP, 21.4% med) so NLP's missing contribution
-      doesn't drag scores toward 50.
+    - Patients with a real NLP score (non-zero) use full weights (70/30).
+    - Patients without NLP data (score == 0.0) use 100% health index
+      so NLP's missing contribution doesn't drag scores toward 50.
     """
     import logging
 
