@@ -1,36 +1,57 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import dynamic from "next/dynamic";
 import { getPatients, getCohort, getPatient, getPatientOutcome, getValidation } from "@/lib/api";
-import type { CohortData, PatientData, OutcomeData, ValidationData } from "@/lib/types";
+import type {
+  CohortData,
+  PatientData,
+  OutcomeData,
+  ValidationData,
+  PatientMeta,
+  PatientFilters,
+} from "@/lib/types";
 import { TAB_BACKGROUNDS } from "@/lib/constants";
-import CohortOverview from "@/components/tabs/CohortOverview";
-import PatientExplorer from "@/components/tabs/PatientExplorer";
-import OutcomePredictor from "@/components/tabs/OutcomePredictor";
-import ValidationTab from "@/components/tabs/ValidationTab";
+const CohortOverview = dynamic(() => import("@/components/tabs/CohortOverview"), {
+  loading: () => <div className="loading-state"><div className="loading-spinner" /></div>,
+});
+const PatientExplorer = dynamic(() => import("@/components/tabs/PatientExplorer"), {
+  loading: () => <div className="loading-state"><div className="loading-spinner" /></div>,
+});
+const OutcomePredictor = dynamic(() => import("@/components/tabs/OutcomePredictor"), {
+  loading: () => <div className="loading-state"><div className="loading-spinner" /></div>,
+});
+const ValidationTab = dynamic(() => import("@/components/tabs/ValidationTab"), {
+  loading: () => <div className="loading-state"><div className="loading-spinner" /></div>,
+});
 import IlayChatbot from "@/components/IlayChatbot";
 import LandingHero from "@/components/LandingHero";
 import HowItWorks from "@/components/HowItWorks";
 import Skeleton from "@/components/ui/Skeleton";
 
-const TAB_LABELS = ["Cohort Overview", "Patient Explorer", "Outcome Predictor", "Validation"];
+const TAB_LABELS = ["Cohort Overview", "Patient Health Explorer", "Patient Risk Explorer", "Validation"];
+const CACHE_MAX_SIZE = 50;
 
 export default function Home() {
   const [showDashboard, setShowDashboard] = useState(false);
   const [showHowItWorks, setShowHowItWorks] = useState(false);
-  const [tabTransitionKey, setTabTransitionKey] = useState(0);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   // ── Tab state ──────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState(0);
 
   // ── Data state ─────────────────────────────────────────────────────────
-  const [patients, setPatients] = useState<number[]>([]);
-  const [selectedPatientId, setSelectedPatientId] = useState<number | null>(null);
+  const [patients, setPatients] = useState<string[]>([]);
+  const [patientMeta, setPatientMeta] = useState<PatientMeta[]>([]);
+  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
   const [cohortData, setCohortData] = useState<CohortData | null>(null);
   const [patientData, setPatientData] = useState<PatientData | null>(null);
   const [outcomeData, setOutcomeData] = useState<OutcomeData | null>(null);
   const [validationData, setValidationData] = useState<ValidationData | null>(null);
+  const patientCacheRef = useRef<Map<string, PatientData>>(new Map());
+  const outcomeCacheRef = useRef<Map<string, OutcomeData>>(new Map());
+  const patientFetchAbortRef = useRef<AbortController | null>(null);
+  const outcomeFetchAbortRef = useRef<AbortController | null>(null);
 
   // ── Loading state ──────────────────────────────────────────────────────
   const [loadingPatients, setLoadingPatients] = useState(true);
@@ -41,6 +62,71 @@ export default function Home() {
 
   // ── Error state ────────────────────────────────────────────────────────
   const [error, setError] = useState<string | null>(null);
+
+  // ── Shared patient filters (synced between Health Explorer & Risk Explorer) ──
+  const DEFAULT_FILTERS: PatientFilters = {
+    gender: "ALL",
+    doctor: "ALL",
+    comorbidityConditions: [],
+    ageMin: "",
+    ageMax: "",
+    weightMin: "",
+    weightMax: "",
+  };
+  const [filters, setFilters] = useState<PatientFilters>(DEFAULT_FILTERS);
+
+  const metaByPatientId = useMemo(
+    () => new Map(patientMeta.map((m) => [m.patient_id, m])),
+    [patientMeta],
+  );
+
+  const filteredPatients = useMemo(() => {
+    const ageMin = filters.ageMin.trim() === "" ? null : Number(filters.ageMin);
+    const ageMax = filters.ageMax.trim() === "" ? null : Number(filters.ageMax);
+    const weightMin = filters.weightMin.trim() === "" ? null : Number(filters.weightMin);
+    const weightMax = filters.weightMax.trim() === "" ? null : Number(filters.weightMax);
+
+    const hasInvalid =
+      (filters.ageMin.trim() !== "" && !Number.isFinite(ageMin)) ||
+      (filters.ageMax.trim() !== "" && !Number.isFinite(ageMax)) ||
+      (filters.weightMin.trim() !== "" && !Number.isFinite(weightMin)) ||
+      (filters.weightMax.trim() !== "" && !Number.isFinite(weightMax)) ||
+      (ageMin != null && ageMax != null && ageMin > ageMax) ||
+      (weightMin != null && weightMax != null && weightMin > weightMax);
+
+    if (hasInvalid) return [];
+
+    return patients.filter((pid) => {
+      const meta = metaByPatientId.get(pid);
+      const sexCode = meta?.sex?.trim().toUpperCase() ?? "";
+
+      if (filters.gender !== "ALL" && sexCode !== filters.gender) return false;
+
+      const patientDoctorCode = meta?.doctor_code?.trim() ?? "";
+      if (filters.doctor !== "ALL" && patientDoctorCode !== filters.doctor) return false;
+
+      if (filters.comorbidityConditions.length > 0) {
+        const conditionSet = new Set(meta?.comorbidity_conditions ?? []);
+        for (const cond of filters.comorbidityConditions) {
+          if (!conditionSet.has(cond)) return false;
+        }
+      }
+
+      if (ageMin != null || ageMax != null) {
+        if (meta?.age == null) return false;
+        if (ageMin != null && meta.age < ageMin) return false;
+        if (ageMax != null && meta.age > ageMax) return false;
+      }
+
+      if (weightMin != null || weightMax != null) {
+        if (meta?.weight_kg == null) return false;
+        if (weightMin != null && meta.weight_kg < weightMin) return false;
+        if (weightMax != null && meta.weight_kg > weightMax) return false;
+      }
+
+      return true;
+    });
+  }, [patients, filters, metaByPatientId]);
 
   // ── Initial load: patients → cohort → auto-select first ────────────────
   useEffect(() => {
@@ -79,41 +165,108 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [showDashboard]);
 
-  // ── When selected patient changes: fetch patient + outcome ─────────────
+  // ── Auto-select first filtered patient when current selection is outside filter ──
   useEffect(() => {
-    if (!showDashboard || selectedPatientId === null) return;
-    let cancelled = false;
+    if (loadingPatients || filteredPatients.length === 0) return;
+    if (selectedPatientId == null || !filteredPatients.includes(selectedPatientId)) {
+      setSelectedPatientId(filteredPatients[0]);
+    }
+  }, [filteredPatients, selectedPatientId, loadingPatients]);
+
+  // ── When selected patient changes: fetch Patient Explorer payload ───────
+  useEffect(() => {
+    if (!showDashboard || activeTab !== 1 || selectedPatientId === null) return;
+    const pid = selectedPatientId;
+    patientFetchAbortRef.current?.abort();
+    const controller = new AbortController();
+    patientFetchAbortRef.current = controller;
 
     async function fetchPatientDetails() {
+      const cached = patientCacheRef.current.get(pid);
+      if (cached) {
+        setPatientData(cached);
+        setLoadingPatient(false);
+        return;
+      }
+
       try {
         setLoadingPatient(true);
-        setLoadingOutcome(true);
-        setPatientData(null);
-        setOutcomeData(null);
-
-        const [pData, oData] = await Promise.all([
-          getPatient(selectedPatientId!),
-          getPatientOutcome(selectedPatientId!),
-        ]);
-
-        if (cancelled) return;
+        const pData = await getPatient(pid, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        cachePut(patientCacheRef.current, pid, pData);
         setPatientData(pData);
-        setOutcomeData(oData);
       } catch (err) {
-        if (!cancelled) {
-          console.error("Failed to fetch patient details:", err);
+        if (!(err instanceof DOMException && err.name === "AbortError")) {
+          console.error("Failed to fetch patient explorer data:", err);
         }
       } finally {
-        if (!cancelled) {
+        if (patientFetchAbortRef.current === controller) {
           setLoadingPatient(false);
-          setLoadingOutcome(false);
+          patientFetchAbortRef.current = null;
         }
       }
     }
 
     fetchPatientDetails();
-    return () => { cancelled = true; };
-  }, [selectedPatientId, showDashboard]);
+    return () => {
+      controller.abort();
+      if (patientFetchAbortRef.current === controller) {
+        patientFetchAbortRef.current = null;
+      }
+    };
+  }, [activeTab, selectedPatientId, showDashboard]);
+
+  // ── Fetch Outcome Predictor payload only when tab is active ────────────
+  useEffect(() => {
+    if (!showDashboard || activeTab !== 2 || selectedPatientId === null) return;
+    const pid = selectedPatientId;
+    outcomeFetchAbortRef.current?.abort();
+    const controller = new AbortController();
+    outcomeFetchAbortRef.current = controller;
+
+    async function fetchOutcomeDetails() {
+      const cached = outcomeCacheRef.current.get(pid);
+      if (cached) {
+        setOutcomeData(cached);
+        setLoadingOutcome(false);
+        return;
+      }
+
+      try {
+        setLoadingOutcome(true);
+        const oData = await getPatientOutcome(pid, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        cachePut(outcomeCacheRef.current, pid, oData);
+        setOutcomeData(oData);
+      } catch (err) {
+        if (!(err instanceof DOMException && err.name === "AbortError")) {
+          console.error("Failed to fetch outcome predictor data:", err);
+        }
+      } finally {
+        if (outcomeFetchAbortRef.current === controller) {
+          setLoadingOutcome(false);
+          outcomeFetchAbortRef.current = null;
+        }
+      }
+    }
+
+    fetchOutcomeDetails();
+    return () => {
+      controller.abort();
+      if (outcomeFetchAbortRef.current === controller) {
+        outcomeFetchAbortRef.current = null;
+      }
+    };
+  }, [activeTab, selectedPatientId, showDashboard]);
+
+  // ── Bounded cache: evict oldest when exceeding CACHE_MAX_SIZE ────────────
+  const cachePut = useCallback(<T,>(cache: Map<string, T>, key: string, value: T) => {
+    cache.set(key, value);
+    if (cache.size > CACHE_MAX_SIZE) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+  }, []);
 
   // ── Lazy-load validation data when tab 3 is selected ───────────────────
   useEffect(() => {
@@ -143,7 +296,26 @@ export default function Home() {
 
   // ── Handlers ───────────────────────────────────────────────────────────
   const handlePatientChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
-    setSelectedPatientId(Number(e.target.value));
+    const raw = e.target.value;
+    if (raw === "") return;
+    setSelectedPatientId(raw);
+  }, []);
+
+  const handlePatientSelect = useCallback((nextPatientId: string | null) => {
+    if (nextPatientId == null) return;
+    setSelectedPatientId(nextPatientId);
+  }, []);
+
+  const handleCohortPageChange = useCallback(async (page: number) => {
+    try {
+      setLoadingCohort(true);
+      const cRes = await getCohort({ page });
+      setCohortData(cRes);
+    } catch (err) {
+      console.error("Failed to fetch cohort page:", err);
+    } finally {
+      setLoadingCohort(false);
+    }
   }, []);
 
   const handleTabChange = useCallback((idx: number) => {
@@ -174,10 +346,6 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    setTabTransitionKey((prev) => prev + 1);
-  }, [activeTab]);
-
-  useEffect(() => {
     if (!showDashboard) return;
 
     const preloaders = TAB_BACKGROUNDS.map((src) => {
@@ -200,6 +368,8 @@ export default function Home() {
   }
 
   const isInitialBootstrap = loadingPatients || (loadingCohort && cohortData === null);
+  const isPatientSwitching = loadingPatient && patientData !== null;
+  const isOutcomeSwitching = loadingOutcome && outcomeData !== null;
 
   if (error) {
     return (
@@ -255,32 +425,6 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Patient selector */}
-          <div className="app-filter">
-            <label
-              htmlFor="patient-select"
-              className="app-filter-label"
-            >
-              Patient
-            </label>
-            <select
-              id="patient-select"
-              className="glass app-select"
-              value={selectedPatientId ?? ""}
-              onChange={handlePatientChange}
-              disabled={loadingPatients}
-            >
-              {loadingPatients ? (
-                <option>Loading…</option>
-              ) : (
-                patients.map((pid) => (
-                  <option key={pid} value={pid} style={{ background: "#1A1D27", color: "#E8E8E8" }}>
-                    Patient {pid}
-                  </option>
-                ))
-              )}
-            </select>
-          </div>
         </header>
 
         {/* ── Tab bar ─────────────────────────────────────────────────────── */}
@@ -324,11 +468,12 @@ export default function Home() {
               <Skeleton variant="card" className="h-[240px]" />
             </div>
           ) : (
-            <div key={`${activeTab}-${tabTransitionKey}`} className="tab-panel-animate">
+            <div key={activeTab} className="tab-panel-animate">
               {activeTab === 0 && (
                 <CohortOverview
                   data={cohortData}
                   loading={loadingCohort}
+                  onPageChange={handleCohortPageChange}
                 />
               )}
 
@@ -336,6 +481,16 @@ export default function Home() {
                 <PatientExplorer
                   data={patientData}
                   loading={loadingPatient}
+                  switching={isPatientSwitching}
+                  patients={patients}
+                  filteredPatients={filteredPatients}
+                  patientMeta={patientMeta}
+                  selectedPatientId={selectedPatientId}
+                  onPatientChange={handlePatientChange}
+                  onPatientSelect={handlePatientSelect}
+                  loadingPatients={loadingPatients}
+                  filters={filters}
+                  onFiltersChange={setFilters}
                 />
               )}
 
@@ -343,7 +498,15 @@ export default function Home() {
                 <OutcomePredictor
                   data={outcomeData}
                   loading={loadingOutcome}
-                  selectedPatientId={selectedPatientId ?? 0}
+                  switching={isOutcomeSwitching}
+                  selectedPatientId={selectedPatientId}
+                  patients={patients}
+                  filteredPatients={filteredPatients}
+                  onPatientChange={handlePatientChange}
+                  onPatientSelect={handlePatientSelect}
+                  loadingPatients={loadingPatients}
+                  filters={filters}
+                  onFiltersChange={setFilters}
                 />
               )}
 
@@ -364,7 +527,10 @@ export default function Home() {
 
       {/* ── Floating chatbot ────────────────────────────────────────────── */}
       {selectedPatientId !== null && (
-        <IlayChatbot patientId={selectedPatientId} />
+        <IlayChatbot
+          patientId={selectedPatientId}
+          activeTabLabel={TAB_LABELS[activeTab]}
+        />
       )}
 
       <HowItWorks open={showHowItWorks} onClose={() => setShowHowItWorks(false)} />

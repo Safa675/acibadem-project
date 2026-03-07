@@ -35,9 +35,8 @@ You are ILAY. And this is your platform — an AI-powered clinical risk \
 intelligence platform developed by Acıbadem University for the ACUHIT Hackathon 2026.
 
 Your job is to help doctors, nurses, and clinical staff understand dashboard metrics \
-and the current patient's data. You have FULL ACCESS to the patient's computed metrics \
-(provided to you in the CURRENT PATIENT DATA section below each message). Use that data \
-to give specific, data-driven answers — never say you don't have access.
+using both cohort-level and selected-patient data (provided below each message). \
+Use those numbers to give specific, data-driven answers — never say you don't have access.
 
 ═══════════════════════════════════════════
 LANGUAGE RULE (CRITICAL)
@@ -45,6 +44,21 @@ LANGUAGE RULE (CRITICAL)
 - If the user writes in English → reply in English.
 - If the user writes in Turkish → reply in Turkish.
 - Always match the user's language. Never force one language.
+
+═══════════════════════════════════════════
+CONTEXT ROUTING RULE (CRITICAL)
+═══════════════════════════════════════════
+Each turn includes:
+- ACTIVE DASHBOARD TAB
+- CURRENT COHORT DATA
+- SELECTED PATIENT DATA
+
+How to choose scope:
+- Cohort wording (population, cohort, distribution, "patients", "overall") -> answer from CURRENT COHORT DATA.
+- Patient wording ("this patient", singular patient detail) -> answer from SELECTED PATIENT DATA.
+- Comparison wording ("compare cohort vs this patient") -> use both sections.
+- If scope is ambiguous, ask one short clarification question:
+  "Do you want cohort-wide or selected-patient interpretation?"
 
 ═══════════════════════════════════════════
 METRICS — FULL REFERENCE
@@ -114,7 +128,7 @@ METRICS — FULL REFERENCE
      - NLP Signal (15%): NLP score mapped so −1 → 100, +1 → 0
      - Prescription Intensity (10%): Rx velocity mapped so 0 → 0, 10+/mo → 100
      - Comorbidity Burden (10%): comorbidity count mapped so 0 → 0, 4+ → 100
-   • The CURRENT PATIENT DATA section includes the exact point contribution of EACH factor
+   • The SELECTED PATIENT DATA section includes the exact point contribution of EACH factor
      (feature_contributions dict). USE THESE NUMBERS when explaining the CSI.
    • Tiers: LOW (0–25), MODERATE (25–50), HIGH (50–75), CRITICAL (75–100)
    • 0 = minimal burden, 100 = maximum burden
@@ -153,9 +167,8 @@ RESPONSE RULES (YOU MUST FOLLOW THESE STRICTLY):
   - Technical or analytical question (why is X, what's driving Y, explain Z) → go as deep as needed.
     Use exact numbers from the patient data. Walk through each factor if relevant. Don't cut the answer short.
   - Conversational chitchat → keep it very short.
-• Always use the actual numbers from CURRENT PATIENT DATA. Never speak in vague generalities
-  when you have exact values — say "the health trend is contributing 18.4 points to the CSI"
-  not "the health trend is a factor".
+• Always use the actual numbers from the relevant context section (cohort and/or selected patient).
+  Never speak in vague generalities when exact values are available.
 • Sound human. Imagine you're a doctor leaning over to a colleague saying "hey so basically..."
 • No bullet points unless listing 3+ genuinely separate items.
 • Max 1 emoji per message, only for risk tier color if relevant. Usually zero emoji.
@@ -174,8 +187,69 @@ _CSI_FACTOR_LABELS = {
 }
 
 
+def build_cohort_context(
+    active_tab: str,
+    kpi: dict,
+    rating_distribution: dict[str, int],
+    regime_distribution: dict[str, int],
+    var_summary=None,
+) -> str:
+    """Build a cohort-level context block for scope-aware chat responses."""
+    lines = [
+        f"\n═══ ACTIVE DASHBOARD TAB: {active_tab or 'Unknown'} ═══",
+        "═══ CURRENT COHORT DATA ═══",
+    ]
+
+    n_patients = int(kpi.get("n_patients", 0))
+    mean_score = float(kpi.get("mean_score", 0.0))
+    n_high_risk = int(kpi.get("n_high_risk", 0))
+    n_critical = int(kpi.get("n_critical", 0))
+    total_rx = int(kpi.get("total_rx", 0))
+
+    lines.append(f"• Monitored Patients: {n_patients}")
+    lines.append(f"• Mean Health Score: {mean_score:.1f}")
+    lines.append(f"• High-Risk Patients (VaR RED, var_pct < -10%): {n_high_risk}")
+    lines.append(f"• Critical State Now: {n_critical}")
+    lines.append(f"• Total Prescriptions: {total_rx}")
+
+    rating_order = ["AAA", "AA", "A", "BBB", "BB", "B/CCC"]
+    if rating_distribution:
+        lines.append("\n⭐ RATING DISTRIBUTION:")
+        for rating in rating_order:
+            if rating in rating_distribution:
+                lines.append(f"  • {rating}: {int(rating_distribution[rating])}")
+
+    if regime_distribution:
+        lines.append("\n🏥 REGIME DISTRIBUTION:")
+        for state, count in sorted(regime_distribution.items(), key=lambda x: x[0]):
+            lines.append(f"  • {state}: {int(count)}")
+
+    if (
+        var_summary is not None
+        and hasattr(var_summary, "empty")
+        and not var_summary.empty
+    ):
+        if "risk_tier" in var_summary.columns:
+            lines.append("\n📉 HEALTH VaR TIER COUNTS:")
+            tier_counts = var_summary["risk_tier"].value_counts().to_dict()
+            for tier in ["RED", "ORANGE", "YELLOW", "GREEN"]:
+                if tier in tier_counts:
+                    lines.append(f"  • {tier}: {int(tier_counts[tier])}")
+
+        if {"patient_id", "var_pct", "risk_tier"}.issubset(set(var_summary.columns)):
+            lines.append("\n📌 WORST DOWNSIDE VaR PATIENTS (Top 5 by var_pct):")
+            worst = var_summary.sort_values("var_pct", ascending=True).head(5)
+            for _, row in worst.iterrows():
+                lines.append(
+                    f"  • Patient {row['patient_id']}: {float(row['var_pct']):.1f}% ({row['risk_tier']})"
+                )
+
+    lines.append("═══ END COHORT DATA ═══")
+    return "\n".join(lines)
+
+
 def build_patient_context(
-    patient_id: int,
+    patient_id: str,
     profile,
     comp_row,
     regime_state: str,
@@ -186,7 +260,7 @@ def build_patient_context(
     rec_df=None,
 ) -> str:
     """Build a text block summarizing the current patient's data for the LLM."""
-    lines = [f"\n═══ CURRENT PATIENT DATA: Patient #{patient_id} ═══"]
+    lines = [f"\n═══ SELECTED PATIENT DATA: Patient #{patient_id} ═══"]
 
     # Demographics
     if profile:
@@ -326,15 +400,15 @@ def build_patient_context(
                         ref_info = f" [ref: {rmin}-{rmax}]"
                 lines.append(f"  • {row['test_name']}: {row['value']}{ref_info}")
 
-    lines.append("═══ END PATIENT DATA ═══")
+    lines.append("═══ END SELECTED PATIENT DATA ═══")
     return "\n".join(lines)
 
 
-def _build_messages(messages: list[dict], patient_context: str) -> list[dict]:
-    """Prepend system prompt + patient context to the message list."""
+def _build_messages(messages: list[dict], runtime_context: str) -> list[dict]:
+    """Prepend system prompt + context block to the message list."""
     system_content = SYSTEM_PROMPT
-    if patient_context:
-        system_content += "\n\n" + patient_context
+    if runtime_context:
+        system_content += "\n\n" + runtime_context
     return [{"role": "system", "content": system_content}] + messages
 
 
@@ -343,7 +417,7 @@ def _get_api_key() -> str | None:
 
 
 async def stream_chat_response(
-    messages: list[dict], patient_context: str = ""
+    messages: list[dict], runtime_context: str = ""
 ) -> AsyncIterator[str]:
     """
     Async generator that streams text tokens from OpenRouter using SSE.
@@ -357,10 +431,10 @@ async def stream_chat_response(
         yield "⚠️ OpenRouter API key not found. Set OPENROUTER_API_KEY in your .env file."
         return
 
-    full_messages = _build_messages(messages, patient_context)
+    full_messages = _build_messages(messages, runtime_context)
 
     msg_count = len(full_messages)
-    ctx_len = len(patient_context)
+    ctx_len = len(runtime_context)
     logger.info(
         "LLM REQUEST | model=%s | msgs=%d | context_chars=%d",
         MODEL,

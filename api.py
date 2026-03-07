@@ -20,8 +20,9 @@ warnings.filterwarnings("ignore", category=UserWarning)
 _THIS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_THIS_DIR))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import pandas as pd
@@ -31,10 +32,9 @@ from src import (
     load_all_data,
     HealthIndexBuilder,
     classify_all_patients,
-    score_patient_visits,
     compute_all_composites,
-    dual_nlp_score,
     get_patient_labs,
+    get_patient_visits,
     get_patient_prescriptions,
     build_all_outcome_profiles,
     profiles_to_dataframe,
@@ -43,15 +43,26 @@ from src import (
     run_all_validations,
     validation_summary_df,
 )
-from src.chatbot import stream_chat_response, build_patient_context
-from src.health_var import compute_health_var
-
-# Force-load NLP transformer at startup
-from src.nlp_signal import _load_transformer
-import src.nlp_signal as _nlp_mod
-
-if _nlp_mod._transformer_available is None:
-    _load_transformer()
+from src.chatbot import (
+    stream_chat_response,
+    build_patient_context,
+    build_cohort_context,
+)
+from src.fusion import COMPOSITE_TIERS
+from src.eci import compute_all_eci, ECI_TIERS
+from src.health_var import compute_all_vars_parallel
+from scripts.score_sofa import (
+    compute_all_sofa,
+    aggregate_per_patient as aggregate_sofa_per_patient,
+)
+from scripts.score_news2 import (
+    compute_all_news2,
+    aggregate_per_patient as aggregate_news2_per_patient,
+)
+from scripts.score_apache2 import (
+    compute_all_apache2,
+    aggregate_per_patient as aggregate_apache2_per_patient,
+)
 
 # ── App ──────────────────────────────────────────────────────────────────────
 
@@ -86,6 +97,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+_correlation_cache = None
+
 
 def _safe(v):
     """Convert numpy types and NaN/Inf to JSON-safe Python natives."""
@@ -112,9 +127,163 @@ def _safe_dict(d: dict) -> dict:
     return {k: _safe(v) for k, v in d.items()}
 
 
+def _normalize_sex_code(value: object) -> str | None:
+    """Normalize heterogeneous sex values to compact codes used in filters."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    upper = raw.upper()
+    if upper in {"NAN", "NONE", "NULL"}:
+        return None
+    if upper in {"KADIN", "FEMALE", "F", "BAYAN", "KIZ"}:
+        return "K"
+    if upper in {"ERKEK", "MALE", "M", "BAY", "ER"}:
+        return "E"
+    if upper.startswith("K"):
+        return "K"
+    if upper.startswith("E"):
+        return "E"
+    return upper
+
+
+_COMORBIDITY_CONDITION_COLUMNS = [
+    ("Hipertansiyon Hastada", "hypertension"),
+    ("Kalp Damar Hastada", "cardiovascular"),
+    ("Diyabet Hastada", "diabetes"),
+    ("Kan Hastalıkları Hastada", "hematologic"),
+    ("Kronik Hastalıklar Diğer", "other_chronic"),
+    ("Ameliyat Geçmişi", "surgery_history"),
+]
+
+
+def _clean_text_token(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (float, np.floating)) and math.isnan(float(value)):
+        return None
+
+    token = str(value).strip()
+    if not token:
+        return None
+    if token.upper() in {"NAN", "NONE", "NULL"}:
+        return None
+    return token
+
+
+def _has_positive_condition(values: pd.Series) -> bool:
+    for value in values:
+        if isinstance(value, str):
+            if value.strip():
+                return True
+            continue
+
+        if value is None or pd.isna(value):
+            continue
+
+        if isinstance(value, (int, float, np.integer, np.floating, bool, np.bool_)):
+            if float(value) > 0:
+                return True
+
+    return False
+
+
+def _latest_non_empty_text_by_patient(
+    df: pd.DataFrame, value_col: str, date_col: str = "visit_date"
+) -> dict[str, str]:
+    required_cols = {"patient_id", value_col}
+    if not required_cols.issubset(set(df.columns)):
+        return {}
+
+    cols = ["patient_id", value_col]
+    if date_col in df.columns:
+        cols.append(date_col)
+
+    work = df[cols].copy()
+    work[value_col] = work[value_col].map(_clean_text_token)
+    work = work[work[value_col].notna()]
+    if work.empty:
+        return {}
+
+    if date_col in work.columns:
+        work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
+        work = work.sort_values(["patient_id", date_col], na_position="first")
+    else:
+        work = work.sort_values(["patient_id"])
+
+    return {
+        str(pid): str(val)
+        for pid, val in work.groupby("patient_id")[value_col].last().items()
+    }
+
+
+def _comorbidity_conditions_by_patient(ana_df: pd.DataFrame) -> dict[str, list[str]]:
+    if "patient_id" not in ana_df.columns:
+        return {}
+
+    result: dict[str, list[str]] = {}
+    for pid, rows in ana_df.groupby("patient_id"):
+        conditions: list[str] = []
+        for source_col, condition_key in _COMORBIDITY_CONDITION_COLUMNS:
+            if source_col not in rows.columns:
+                continue
+            vals = rows[source_col].dropna()
+            if vals.empty:
+                continue
+            if _has_positive_condition(vals):
+                conditions.append(condition_key)
+        result[str(pid)] = conditions
+
+    return result
+
+
+def _build_rating_intervals() -> list[dict]:
+    """Build rating interval labels from fusion.py tier source-of-truth."""
+    intervals = []
+    for idx, (min_score, rating, _) in enumerate(COMPOSITE_TIERS):
+        if idx == 0:
+            max_score = 100
+        else:
+            max_score = int(COMPOSITE_TIERS[idx - 1][0]) - 1
+        intervals.append(
+            {
+                "rating": rating,
+                "min_score": int(min_score),
+                "max_score": int(max_score),
+                "label": f"{int(min_score)}-{int(max_score)}",
+            }
+        )
+    return intervals
+
+
 # ── Pipeline Cache ───────────────────────────────────────────────────────────
 
 _pipeline_cache: dict | None = None
+
+
+def _read_current_rss_mb() -> float | None:
+    """Read process RSS from /proc/self/status (Linux)."""
+    try:
+        with open("/proc/self/status", encoding="utf-8") as status_file:
+            for line in status_file:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1]) / 1024.0
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _log_rss(stage: str) -> None:
+    rss_mb = _read_current_rss_mb()
+    if rss_mb is None:
+        logger.info("%s | RSS unavailable", stage)
+    else:
+        logger.info("%s | RSS %.1f MB", stage, rss_mb)
 
 
 def _load_pipeline() -> dict:
@@ -122,134 +291,414 @@ def _load_pipeline() -> dict:
     if _pipeline_cache is not None:
         return _pipeline_cache
 
+    import gc
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    t0 = time.perf_counter()
+
     data = load_all_data(str(_THIS_DIR))
     lab_df = data["lab"]
     ana_df = data["ana"]
     rec_df = data["rec"]
+    logger.info("Data loaded in %.1fs", time.perf_counter() - t0)
+    _log_rss("Stage 1/5 data load complete")
 
-    builder = HealthIndexBuilder(lab_df, ana_df, vital_weight=0.45)
-    all_lab_patients = lab_df["patient_id"].unique().tolist()
-
-    all_snapshots = {}
-    all_series = {}
-    for pid in all_lab_patients:
-        snaps = builder.build_patient_series(pid)
-        if snaps:
-            all_snapshots[pid] = snaps
-            all_series[pid] = builder.to_series_points(snaps)
-
-    regimes = classify_all_patients(all_snapshots)
-
-    var_results_by_pid = {}
-    for _pid, _series in all_series.items():
-        _vr = compute_health_var(
-            _pid, _series, horizon_draws=3, iterations=3000, seed=42
-        )
-        if _vr is not None:
-            var_results_by_pid[_pid] = _vr
-
-    _var_rows = []
-    for _vr in var_results_by_pid.values():
-        _var_rows.append(
-            {
-                "patient_id": _vr.patient_id,
-                "current_score": _vr.current_score,
-                "var_pct": _vr.var_pct,
-                "health_var_score": _vr.p05,
-                "median_forecast": _vr.p50,
-                "risk_tier": _vr.risk_tier,
-                "risk_label": _vr.risk_label,
-            }
-        )
-    var_summary = (
-        pd.DataFrame(_var_rows).sort_values("var_pct").reset_index(drop=True)
-        if _var_rows
-        else pd.DataFrame()
+    builder = HealthIndexBuilder(
+        lab_df,
+        ana_df,
+        vital_weight=0.45,
     )
 
-    nlp_results = {}
-    for pid in ana_df["patient_id"].unique():
-        nlp_results[int(pid)] = score_patient_visits(ana_df, int(pid))
+    all_snapshots, all_series = builder.build_all_patients_bulk()
+
+    t_hi = time.perf_counter()
+    logger.info(
+        "Health Index built for %d patients in %.1fs", len(all_snapshots), t_hi - t0
+    )
+    _log_rss("Stage 2/5 health index complete")
+
+    def _run_regimes():
+        t = time.perf_counter()
+        result = classify_all_patients(all_snapshots)
+        logger.info("Regimes classified in %.1fs", time.perf_counter() - t)
+        return result
+
+    def _run_var():
+        t = time.perf_counter()
+        var_results_by_pid, var_summary = compute_all_vars_parallel(
+            all_series, horizon_draws=3, iterations=500, seed=42
+        )
+        logger.info(
+            "VaR computed for %d patients in %.1fs",
+            len(var_results_by_pid),
+            time.perf_counter() - t,
+        )
+        return var_results_by_pid, var_summary
+
+    logger.info("Stage 3/5 launching regimes + VaR with bounded concurrency (2)…")
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="pipeline") as pool:
+        fut_regimes = pool.submit(_run_regimes)
+        fut_var = pool.submit(_run_var)
+
+        regimes = fut_regimes.result()
+        var_results_by_pid, var_summary = fut_var.result()
+    _log_rss("Stage 3/5 regimes + VaR complete")
+
+    logger.info("Stage 4/5 running benchmarks sequentially to reduce peak RAM…")
+    t_bench = time.perf_counter()
+
+    sofa_visit_df = compute_all_sofa(lab_df, ana_df)
+    sofa_per_patient = (
+        aggregate_sofa_per_patient(sofa_visit_df)
+        if not sofa_visit_df.empty
+        else pd.DataFrame()
+    )
+    del sofa_visit_df
+    gc.collect()
+    _log_rss("Stage 4/5 SOFA complete")
+
+    news2_visit_df = compute_all_news2(ana_df)
+    news2_per_patient = (
+        aggregate_news2_per_patient(news2_visit_df)
+        if not news2_visit_df.empty
+        else pd.DataFrame()
+    )
+    del news2_visit_df
+    gc.collect()
+    _log_rss("Stage 4/5 NEWS2 complete")
+
+    apache2_visit_df = compute_all_apache2(lab_df, ana_df)
+    apache2_per_patient = (
+        aggregate_apache2_per_patient(apache2_visit_df)
+        if not apache2_visit_df.empty
+        else pd.DataFrame()
+    )
+    del apache2_visit_df
+    gc.collect()
+    _log_rss("Stage 4/5 APACHE II complete")
+
+    logger.info(
+        "Benchmarks computed (SOFA: %d, NEWS2: %d, APACHE II: %d) in %.1fs",
+        len(sofa_per_patient),
+        len(news2_per_patient),
+        len(apache2_per_patient),
+        time.perf_counter() - t_bench,
+    )
+
+    # ── NLP: load pre-scored results from disk cache ──────────────────────
+    logger.info("Stage 4.5/5 loading NLP scores from cache…")
+    _log_rss("Stage 4.5/5 NLP cache load start")
+    t_nlp = time.perf_counter()
+
+    _cache_dir = _THIS_DIR / ".cache"
+    _nlp_parquet = _cache_dir / "nlp_results.parquet"
+    _nli_json = _cache_dir / "nli_scores_cache.json"
+
+    nlp_results_df = pd.DataFrame(columns=["patient_id", "visit_date", "nlp_composite"])
+    nli_scores_cache: dict[str, list[dict]] = {}
+
+    if _nlp_parquet.exists():
+        try:
+            nlp_results_df = pd.read_parquet(_nlp_parquet)
+            # Deduplicate (some early runs produced dupes)
+            nlp_results_df = nlp_results_df.drop_duplicates(
+                subset=["patient_id", "visit_date"]
+            )
+            logger.info(
+                "Loaded %d NLP rows (%d unique patients) from cache",
+                len(nlp_results_df),
+                nlp_results_df["patient_id"].nunique(),
+            )
+        except Exception as exc:
+            logger.warning("Failed to load NLP parquet cache: %s", exc)
+            nlp_results_df = pd.DataFrame(
+                columns=["patient_id", "visit_date", "nlp_composite"]
+            )
+    else:
+        logger.info("No NLP cache found at %s — NLP scores will be 0.0", _nlp_parquet)
+
+    if _nli_json.exists():
+        try:
+            with open(_nli_json) as f:
+                nli_scores_cache = json.load(f)
+            logger.info("Loaded NLI detail cache: %d patients", len(nli_scores_cache))
+        except Exception as exc:
+            logger.warning("Failed to load NLI JSON cache: %s", exc)
+            nli_scores_cache = {}
+    else:
+        logger.info("No NLI detail cache found at %s", _nli_json)
+
+    logger.info(
+        "NLP cache loaded in %.1fs",
+        time.perf_counter() - t_nlp,
+    )
+    _log_rss("Stage 4.5/5 NLP cache loaded")
+
+    logger.info("Stage 5/5 building composites, outcomes, and validation…")
 
     latest_health = {
-        pid: snaps[-1].health_score for pid, snaps in all_snapshots.items()
+        pid: snaps[-1].health_score for pid, snaps in all_snapshots.items() if snaps
     }
-    latest_nlp = {}
-    for pid, snaps in all_snapshots.items():
-        last_snap_date = snaps[-1].date
-        nlp_df = nlp_results.get(pid, pd.DataFrame())
-        if (
-            not nlp_df.empty
-            and "nlp_composite" in nlp_df.columns
-            and "visit_date" in nlp_df.columns
-        ):
-            nlp_copy = nlp_df.copy()
-            nlp_copy["visit_date"] = pd.to_datetime(nlp_copy["visit_date"])
-            past_nlp = nlp_copy[nlp_copy["visit_date"] <= last_snap_date]
-            if not past_nlp.empty:
-                latest_nlp[pid] = float(past_nlp.iloc[-1]["nlp_composite"])
-            elif not nlp_copy.empty:
-                latest_nlp[pid] = float(nlp_copy["nlp_composite"].iloc[0])
-            else:
-                latest_nlp[pid] = 0.0
-        else:
-            latest_nlp[pid] = 0.0
+    # Extract latest NLP composite per patient from the scored DataFrame
+    if not nlp_results_df.empty and "nlp_composite" in nlp_results_df.columns:
+        # Sort by visit_date descending, take the last (most recent) per patient
+        _nlp_latest = (
+            nlp_results_df.sort_values("visit_date")
+            .groupby("patient_id")["nlp_composite"]
+            .last()
+        )
+        latest_nlp = {str(pid): float(val) for pid, val in _nlp_latest.items()}
+        # Fill missing patients with 0.0 so fusion auto-adjusts weights
+        for pid in latest_health:
+            latest_nlp.setdefault(pid, 0.0)
+    else:
+        latest_nlp = {pid: 0.0 for pid in latest_health}
 
     composites = compute_all_composites(latest_health, latest_nlp, rec_df, ana_df)
 
-    # Precompute NLI transformer scores for all patients at startup (expensive — do once)
-    _all_text_cols = ["ÖYKÜ", "Muayene Notu", "Kontrol Notu", "YAKINMA", "Tedavi Notu"]
-    nli_scores_cache: dict[int, list] = {}
-    for _pid in ana_df["patient_id"].unique():
-        _ana_pt = ana_df[ana_df["patient_id"] == _pid]
-        _avail_cols = [c for c in _all_text_cols if c in _ana_pt.columns]
-        _scores: list = []
-        if _avail_cols and not _ana_pt.empty:
-            for _, _vrow in _ana_pt.iterrows():
-                _vdate = _vrow.get("visit_date", None)
-                _vdate_str = (
-                    pd.Timestamp(_vdate).strftime("%Y-%m-%d")
-                    if _vdate is not None
-                    and not (isinstance(_vdate, float) and pd.isna(_vdate))
-                    else "—"
-                )
-                for _tcol in _avail_cols:
-                    _txt = _vrow.get(_tcol, None)
-                    if isinstance(_txt, str) and _txt.strip():
-                        _res = dual_nlp_score(_txt)
-                        _scores.append(
-                            {
-                                "date": _vdate_str,
-                                "source": _tcol,
-                                "text": _txt[:300],
-                                "nli_score": round(_res["combined"], 3),
-                            }
-                        )
-        nli_scores_cache[int(_pid)] = _scores
+    # Convert nlp_results_df (single DF) → dict[pid, DataFrame] for outcome profiles
+    nlp_results_by_pid: dict[str, pd.DataFrame] = {}
+    if not nlp_results_df.empty:
+        for pid, group in nlp_results_df.groupby("patient_id"):
+            nlp_results_by_pid[str(pid)] = group.reset_index(drop=True)
 
     profiles = build_all_outcome_profiles(
-        all_snapshots, regimes, ana_df, rec_df, nlp_results
+        all_snapshots, regimes, ana_df, rec_df, nlp_results_by_pid
     )
     profiles_df = profiles_to_dataframe(profiles)
+    profiles_by_pid = {p.patient_id: p for p in profiles}
 
-    var_sum_for_val = var_summary if not var_summary.empty else None
-    validation_results = run_all_validations(profiles_df, var_sum_for_val)
+    # Lightweight selector metadata for frontend-side filtering.
+    latest_weight_by_pid: dict[str, float] = {}
+    if {"patient_id", "visit_date", "Kilo"}.issubset(set(ana_df.columns)):
+        _weights = ana_df[["patient_id", "visit_date", "Kilo"]].copy()
+        _weights["weight_kg"] = pd.to_numeric(_weights["Kilo"], errors="coerce")
+        _weights = _weights.dropna(subset=["weight_kg"]).sort_values(
+            ["patient_id", "visit_date"]
+        )
+        if not _weights.empty:
+            latest_weight_by_pid = {
+                str(pid): float(val)
+                for pid, val in _weights.groupby("patient_id")["weight_kg"]
+                .last()
+                .items()
+            }
+
+    latest_sex_raw_by_pid = _latest_non_empty_text_by_patient(ana_df, "sex")
+    latest_doctor_code_by_pid = _latest_non_empty_text_by_patient(ana_df, "DOCTOR_CODE")
+    comorbidity_conditions_by_pid = _comorbidity_conditions_by_patient(ana_df)
+
+    patient_meta = []
+    for pid in sorted(regimes.keys()):
+        profile = profiles_by_pid.get(pid)
+        age = (
+            int(round(profile.age))
+            if profile is not None
+            and profile.age is not None
+            and not pd.isna(profile.age)
+            else None
+        )
+        sex_raw = (
+            profile.sex
+            if profile is not None and profile.sex is not None
+            else latest_sex_raw_by_pid.get(str(pid))
+        )
+        patient_meta.append(
+            _safe_dict(
+                {
+                    "patient_id": pid,
+                    "age": age,
+                    "sex": _normalize_sex_code(sex_raw),
+                    "sex_raw": str(sex_raw).strip()
+                    if sex_raw is not None and str(sex_raw).strip()
+                    else None,
+                    "weight_kg": latest_weight_by_pid.get(str(pid)),
+                    "doctor_code": latest_doctor_code_by_pid.get(str(pid)),
+                    "comorbidity_conditions": comorbidity_conditions_by_pid.get(
+                        str(pid), []
+                    ),
+                }
+            )
+        )
+
+    # ── Validation (depends on benchmarks + health index) ──────────────────
+    hi_rows = []
+    for pid, series in all_series.items():
+        scores = [pt.value for pt in series]
+        if scores:
+            hi_rows.append(
+                {
+                    "patient_id": pid,
+                    "mean_hi_score": float(np.mean(scores)),
+                    "last_hi_score": float(scores[-1]),
+                }
+            )
+    hi_df = pd.DataFrame(hi_rows) if hi_rows else pd.DataFrame()
+
+    logger.info(
+        "Benchmark scores — SOFA: %d patients, NEWS2: %d patients, APACHE II: %d patients, HI: %d patients",
+        len(sofa_per_patient),
+        len(news2_per_patient),
+        len(apache2_per_patient),
+        len(hi_df),
+    )
+
+    validation_results = run_all_validations(
+        hi_df=hi_df,
+        sofa_df=sofa_per_patient,
+        news2_df=news2_per_patient,
+        apache2_df=apache2_per_patient,
+    )
+    _log_rss("Stage 5/5 composites/outcomes/validation complete")
+
+    # ── ECI (Expected Cost Intensity) ─────────────────────────────────────
+    logger.info("Computing ECI scores...")
+    t_eci = time.perf_counter()
+
+    # all_series is still List[SeriesPoint] at this point; convert to compact
+    # format needed by compute_all_eci (dict of {dates, values})
+    _eci_series: dict[str, dict] = {}
+    for pid, pts in all_series.items():
+        _eci_series[pid] = {
+            "dates": [p.date for p in pts],
+            "values": [p.value for p in pts],
+        }
+
+    eci_df = compute_all_eci(ana_df, lab_df, rec_df, latest_nlp, _eci_series)
+    del _eci_series
+
+    # Build ECI index for O(1) per-patient lookups
+    eci_by_pid: dict[str, dict] = {}
+    if not eci_df.empty:
+        for row in eci_df.to_dict(orient="records"):
+            eci_by_pid[str(row["patient_id"])] = row
+
+    logger.info(
+        "ECI computed for %d patients in %.1fs",
+        len(eci_df),
+        time.perf_counter() - t_eci,
+    )
+    _log_rss("ECI complete")
+
+    # Large intermediate object no longer needed by active endpoints.
+    del all_snapshots
+    gc.collect()
+    _log_rss("Post-cleanup (all_snapshots released)")
+
+    # Build composites index for O(1) per-patient lookups (avoids full DF scan)
+    composites_idx: dict[str, int] = {}
+    if not composites.empty:
+        for i, pid in enumerate(composites["patient_id"]):
+            composites_idx[str(pid)] = i
+
+    # ── Pre-cache KPI scalars (avoids re-scanning full DFs per request) ───
+    n_patients_cached = int(lab_df["patient_id"].nunique())
+    total_rx_cached = int(len(rec_df))
+    mean_score_cached = (
+        round(float(profiles_df["mean_health_score"].mean()), 1)
+        if not profiles_df.empty
+        else 0.0
+    )
+    n_high_risk_cached = (
+        int(len(var_summary[var_summary["risk_tier"] == "RED"]))
+        if not var_summary.empty and "risk_tier" in var_summary.columns
+        else 0
+    )
+    mean_eci_cached = (
+        round(float(eci_df["eci_score"].mean()), 1) if not eci_df.empty else 0.0
+    )
+    n_critical_cached = sum(
+        1
+        for r in regimes.values()
+        if r.last_known_state() is not None and r.last_known_state().value == "Critical"
+    )
+    rating_dist_cached = {}
+    if not composites.empty:
+        for rat, count in composites["rating"].value_counts().items():
+            rating_dist_cached[rat] = int(count)
+    regime_dist_cached = {}
+    for regime_result in regimes.values():
+        state = regime_result.last_known_state()
+        state_str = state.value if state is not None else "Insufficient Data"
+        regime_dist_cached[state_str] = regime_dist_cached.get(state_str, 0) + 1
+
+    # ── Trim raw DataFrames: keep only columns needed by endpoints ────────
+    # lab_df: patient_id, date, test_name, value, ref_min, ref_max
+    #   (drops: unit, cohort)
+    lab_keep = ["patient_id", "date", "test_name", "value", "ref_min", "ref_max"]
+    lab_df = lab_df[[c for c in lab_keep if c in lab_df.columns]].copy()
+
+    # ana_df: patient_id, visit_date, 6 comorbidity cols, 5 text cols
+    #   (drops: age, sex, vitals, BMI, los_days, episode, diagnosis, etc.)
+    ana_keep = [
+        "patient_id",
+        "visit_date",
+        "Hipertansiyon Hastada",
+        "Kalp Damar Hastada",
+        "Diyabet Hastada",
+        "Kan Hastalıkları Hastada",
+        "Kronik Hastalıklar Diğer",
+        "Ameliyat Geçmişi",
+        "ÖYKÜ",
+        "YAKINMA",
+        "Muayene Notu",
+        "Kontrol Notu",
+        "Tedavi Notu",
+    ]
+    ana_df = ana_df[[c for c in ana_keep if c in ana_df.columns]].copy()
+
+    # rec_df: patient_id, date only
+    #   (drops: drug_name, dose, route, duration_days, episode, cohort)
+    rec_keep = ["patient_id", "date"]
+    rec_df = rec_df[[c for c in rec_keep if c in rec_df.columns]].copy()
+
+    gc.collect()
+    _log_rss("Post-trim (raw DFs slimmed, KPIs cached)")
+
+    # ── Compact all_series: List[SeriesPoint] → {"dates": [...], "values": [...]} ─
+    # Eliminates Python NamedTuple per-point overhead (~100 bytes/point → ~16 bytes/point)
+    all_series_compact: dict[str, dict] = {}
+    for pid, pts in all_series.items():
+        all_series_compact[pid] = {
+            "dates": [p.date for p in pts],
+            "values": [p.value for p in pts],
+        }
+    del all_series
+    gc.collect()
+    _log_rss("Post-compact (all_series converted)")
+
+    total_elapsed = time.perf_counter() - t0
+    logger.info("Pipeline fully loaded in %.1fs", total_elapsed)
 
     _pipeline_cache = {
         "lab_df": lab_df,
         "ana_df": ana_df,
         "rec_df": rec_df,
-        "all_snapshots": all_snapshots,
-        "all_series": all_series,
+        "all_series": all_series_compact,
         "regimes": regimes,
         "var_summary": var_summary,
-        "nlp_results": nlp_results,
+        "nlp_results": nlp_results_by_pid,
+        "nlp_results_df": nlp_results_df,
         "composites": composites,
+        "composites_idx": composites_idx,
         "profiles_df": profiles_df,
-        "profiles": {p.patient_id: p for p in profiles},
+        "profiles": profiles_by_pid,
+        "patient_meta": patient_meta,
         "validation_results": validation_results,
         "var_results": var_results_by_pid,
         "nli_scores_cache": nli_scores_cache,
+        "eci_df": eci_df,
+        "eci_by_pid": eci_by_pid,
+        # Pre-cached KPI scalars
+        "kpi_n_patients": n_patients_cached,
+        "kpi_total_rx": total_rx_cached,
+        "kpi_mean_score": mean_score_cached,
+        "kpi_n_high_risk": n_high_risk_cached,
+        "kpi_mean_eci": mean_eci_cached,
+        "kpi_n_critical": n_critical_cached,
+        "kpi_rating_dist": rating_dist_cached,
+        "kpi_regime_dist": regime_dist_cached,
     }
     return _pipeline_cache
 
@@ -267,7 +716,8 @@ async def startup():
 
 class ChatRequest(BaseModel):
     messages: list[dict]
-    patient_id: int
+    patient_id: str
+    active_tab: str
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -275,49 +725,101 @@ class ChatRequest(BaseModel):
 
 @app.get("/api/patients")
 def get_patients():
-    """List all patient IDs."""
+    """Return total patient count + a small initial set of IDs."""
     ctx = _load_pipeline()
-    return {"patients": sorted(ctx["regimes"].keys())}
+    all_ids = sorted(ctx["regimes"].keys())
+    return {
+        "patients": all_ids[:20],
+        "total": len(all_ids),
+    }
+
+
+@app.get("/api/patients/search")
+def search_patients(
+    q: str = Query("", description="Prefix to match against patient_id"),
+    limit: int = Query(20, ge=1, le=100, description="Max results"),
+):
+    """Fast prefix search on patient IDs — for search-as-you-type UI."""
+    ctx = _load_pipeline()
+    all_ids = sorted(ctx["regimes"].keys())
+
+    if not q.strip():
+        # No query: return first `limit` patients
+        matched = all_ids[:limit]
+    else:
+        query = q.strip()
+        matched = [pid for pid in all_ids if str(pid).startswith(query)][:limit]
+
+    # Attach lightweight meta for matched patients
+    meta_lookup = {m["patient_id"]: m for m in ctx.get("patient_meta", [])}
+    results = []
+    for pid in matched:
+        meta = meta_lookup.get(pid, {})
+        results.append(
+            {
+                "patient_id": pid,
+                "age": meta.get("age"),
+                "sex": meta.get("sex"),
+                "sex_raw": meta.get("sex_raw"),
+                "weight_kg": meta.get("weight_kg"),
+                "doctor_code": meta.get("doctor_code"),
+                "comorbidity_conditions": meta.get("comorbidity_conditions", []),
+            }
+        )
+
+    return {"results": results, "total_matched": len(matched)}
+
+
+def _paginate_list(items: list, page: int, per_page: int) -> tuple[list, dict]:
+    """Slice a list for pagination; return (page_items, pagination_meta)."""
+    total = len(items)
+    total_pages = max(1, math.ceil(total / per_page))
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+    end = start + per_page
+    return items[start:end], {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+    }
 
 
 @app.get("/api/cohort")
-def get_cohort():
-    """Cohort overview: KPI metrics + composites + var summary."""
+def get_cohort(
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    per_page: int = Query(50, ge=1, le=500, description="Rows per page"),
+    sort_by: str = Query("composite_score", description="Column to sort composites by"),
+    order: str = Query("desc", regex="^(asc|desc)$", description="Sort order"),
+    rating: str | None = Query(None, description="Filter by rating (e.g. AAA, AA, A)"),
+    regime: str | None = Query(None, description="Filter by regime state"),
+):
+    """Cohort overview: KPI metrics + paginated composites + var summary."""
     ctx = _load_pipeline()
-    lab_df = ctx["lab_df"]
-    rec_df = ctx["rec_df"]
     composites = ctx["composites"]
     profiles_df = ctx["profiles_df"]
     regimes = ctx["regimes"]
     var_summary = ctx["var_summary"]
 
-    n_patients = int(lab_df["patient_id"].nunique())
-    mean_score = (
-        float(profiles_df["mean_health_score"].mean()) if not profiles_df.empty else 0
-    )
-    n_high_risk = (
-        int(len(composites[composites["rating"].isin(["BB", "B/CCC"])]))
-        if not composites.empty
-        else 0
-    )
-    n_critical = sum(
-        1
-        for r in regimes.values()
-        if r.last_known_state() is not None and r.last_known_state().value == "Critical"
-    )
-    total_rx = int(len(rec_df))
+    # Use pre-cached KPI scalars (computed once at startup)
+    n_patients = ctx["kpi_n_patients"]
+    mean_score = ctx["kpi_mean_score"]
+    n_high_risk = ctx["kpi_n_high_risk"]
+    mean_eci = ctx["kpi_mean_eci"]
+    n_critical = ctx["kpi_n_critical"]
+    total_rx = ctx["kpi_total_rx"]
 
-    # Composites table
-    composites_list = []
+    # ── Build composites table (full, then filter, sort, paginate) ────────
+    composites_list_full: list[dict] = []
     if not composites.empty:
-        display_df = composites.copy().sort_values("composite_score", ascending=False)
+        display_df = composites.copy()
+
+        # Merge ECI + profile columns
         if not profiles_df.empty:
             display_df = display_df.merge(
                 profiles_df[
                     [
                         "patient_id",
-                        "csi_score",
-                        "csi_tier",
                         "n_prescriptions",
                         "n_comorbidities",
                         "age",
@@ -326,71 +828,129 @@ def get_cohort():
                 on="patient_id",
                 how="left",
             )
-        for _, row in display_df.iterrows():
-            composites_list.append(_safe_dict(row.to_dict()))
 
-    # VaR summary
-    var_list = []
+        # Merge ECI scores
+        eci_df = ctx["eci_df"]
+        if not eci_df.empty:
+            display_df = display_df.merge(
+                eci_df[["patient_id", "eci_score", "eci_rating", "eci_rating_label"]],
+                on="patient_id",
+                how="left",
+            )
+
+        # Annotate regime state per patient
+        display_df["regime_state"] = display_df["patient_id"].map(
+            lambda pid: (
+                regimes[pid].last_known_state().value
+                if pid in regimes and regimes[pid].last_known_state() is not None
+                else "Insufficient Data"
+            )
+        )
+
+        # ── Filters ──────────────────────────────────────────────────────
+        if rating:
+            display_df = display_df[display_df["rating"] == rating]
+        if regime:
+            display_df = display_df[display_df["regime_state"] == regime]
+
+        # ── Sort ─────────────────────────────────────────────────────────
+        ascending = order == "asc"
+        if sort_by in display_df.columns:
+            display_df = display_df.sort_values(
+                sort_by, ascending=ascending, na_position="last"
+            )
+        else:
+            display_df = display_df.sort_values(
+                "composite_score", ascending=False, na_position="last"
+            )
+
+        composites_list_full = [
+            _safe_dict(r) for r in display_df.to_dict(orient="records")
+        ]
+
+    # Paginate composites
+    composites_page, composites_pagination = _paginate_list(
+        composites_list_full, page, per_page
+    )
+
+    # VaR summary — paginated (same page/per_page as composites)
+    var_list_full = []
     if not var_summary.empty:
-        for _, row in var_summary.iterrows():
-            r = row.to_dict()
+        var_records = var_summary.to_dict(orient="records")
+        for r in var_records:
             r["downside_var_pct"] = round(abs(min(float(r.get("var_pct", 0)), 0.0)), 1)
-            var_list.append(_safe_dict(r))
+            var_list_full.append(_safe_dict(r))
+    var_page, var_pagination = _paginate_list(var_list_full, page, per_page)
 
-    # Rating distribution
-    rating_dist = {}
-    if not composites.empty:
-        for rating, count in composites["rating"].value_counts().items():
-            rating_dist[rating] = int(count)
+    # Rating distribution (pre-cached at startup)
+    rating_dist = ctx["kpi_rating_dist"]
+    rating_intervals = _build_rating_intervals()
 
-    # Regime state distribution
-    regime_dist = {}
-    for regime_result in regimes.values():
-        state = regime_result.last_known_state()
-        state_str = state.value if state is not None else "Insufficient Data"
-        regime_dist[state_str] = regime_dist.get(state_str, 0) + 1
+    # Regime state distribution (pre-cached at startup)
+    regime_dist = ctx["kpi_regime_dist"]
 
-    # Cohort scatter data
+    # Cohort scatter data — stratified sample (max 2000 points)
     scatter_data = []
+    scatter_total = 0
     if not composites.empty:
-        merged = composites.copy()
-        if not profiles_df.empty:
+        merged = composites[
+            ["patient_id", "health_index_score", "nlp_score", "rating"]
+        ].copy()
+        eci_df_ref = ctx["eci_df"]
+        if not eci_df_ref.empty:
             merged = merged.merge(
-                profiles_df[["patient_id", "csi_score"]], on="patient_id", how="left"
+                eci_df_ref[["patient_id", "eci_score"]], on="patient_id", how="left"
             )
-        for _, row in merged.iterrows():
-            scatter_data.append(
-                _safe_dict(
-                    {
-                        "patient_id": int(row["patient_id"]),
-                        "health_index_score": float(row.get("health_index_score", 0)),
-                        "nlp_score": float(row.get("nlp_score", 0)),
-                        "rating": row.get("rating", "N/A"),
-                        "csi_score": float(row.get("csi_score", 30))
-                        if "csi_score" in row
-                        else 30,
-                    }
+        else:
+            merged["eci_score"] = 30.0
+
+        scatter_total = len(merged)
+        MAX_SCATTER = 2000
+
+        if len(merged) > MAX_SCATTER:
+            # Stratified sample by rating to preserve distribution
+            sampled_frames = []
+            for _rating, group in merged.groupby("rating", observed=True):
+                frac = max(1, int(MAX_SCATTER * len(group) / len(merged)))
+                sampled_frames.append(
+                    group.sample(n=min(frac, len(group)), random_state=42)
                 )
-            )
+            merged = pd.concat(sampled_frames, ignore_index=True)
+
+        scatter_data = [
+            {
+                "patient_id": row["patient_id"],
+                "health_index_score": float(row.get("health_index_score", 0)),
+                "nlp_score": float(row.get("nlp_score", 0)),
+                "rating": row.get("rating", "N/A"),
+                "eci_score": float(row.get("eci_score", 30)),
+            }
+            for row in merged.to_dict(orient="records")
+        ]
 
     return {
         "kpi": {
             "n_patients": n_patients,
             "mean_score": round(mean_score, 1),
+            "mean_eci": mean_eci,
             "n_high_risk": n_high_risk,
             "n_critical": n_critical,
             "total_rx": total_rx,
         },
-        "composites": composites_list,
-        "var_summary": var_list,
+        "composites": composites_page,
+        "composites_pagination": composites_pagination,
+        "var_summary": var_page,
+        "var_pagination": var_pagination,
         "rating_distribution": rating_dist,
+        "rating_intervals": rating_intervals,
         "regime_distribution": regime_dist,
         "scatter_data": scatter_data,
+        "scatter_total": scatter_total,
     }
 
 
 @app.get("/api/patient/{patient_id}")
-def get_patient(patient_id: int):
+def get_patient(patient_id: str):
     """Full patient detail for Explorer tab."""
     ctx = _load_pipeline()
     regimes = ctx["regimes"]
@@ -408,11 +968,10 @@ def get_patient(patient_id: int):
 
     # Summary metrics
     profile = profiles.get(patient_id)
-    comp_row = (
-        composites[composites["patient_id"] == patient_id]
-        if not composites.empty
-        else None
-    )
+    composites_idx = ctx["composites_idx"]
+    comp_row = None
+    if patient_id in composites_idx:
+        comp_row = composites.iloc[[composites_idx[patient_id]]]
     regime_r = regimes.get(patient_id)
     _lks = regime_r.last_known_state() if regime_r else None
     last_state = _lks.value if _lks is not None else "Insufficient Data"
@@ -430,6 +989,9 @@ def get_patient(patient_id: int):
 
     var_ex = var_results.get(patient_id)
 
+    # ECI data for this patient
+    eci_data = ctx["eci_by_pid"].get(patient_id, {})
+
     summary = {
         "patient_id": patient_id,
         "rating": rating,
@@ -437,8 +999,13 @@ def get_patient(patient_id: int):
         "regime_state": last_state,
         "health_score": round(profile.final_health_score, 1) if profile else None,
         "downside_var_pct": round(abs(min(var_ex.var_pct, 0.0)), 1) if var_ex else None,
-        "csi_score": round(profile.csi_score, 1) if profile else None,
-        "csi_tier": profile.csi_tier if profile else None,
+        "eci_score": eci_data.get("eci_score"),
+        "eci_rating": eci_data.get("eci_rating"),
+        "eci_rating_label": eci_data.get("eci_rating_label"),
+        "eci_visit_intensity": eci_data.get("visit_intensity"),
+        "eci_med_burden": eci_data.get("med_burden"),
+        "eci_diagnostic_intensity": eci_data.get("diagnostic_intensity"),
+        "eci_trajectory_cost": eci_data.get("trajectory_cost"),
         "age": round(profile.age) if profile and profile.age else None,
         "sex": profile.sex if profile else None,
         "n_comorbidities": profile.n_comorbidities if profile else 0,
@@ -450,7 +1017,7 @@ def get_patient(patient_id: int):
     }
 
     # Comorbidities
-    ana_patient = ana_df[ana_df["patient_id"] == patient_id]
+    ana_patient = get_patient_visits(ana_df, patient_id)
     comorbidities = []
     if not ana_patient.empty:
         comorbidity_cols = [
@@ -477,7 +1044,8 @@ def get_patient(patient_id: int):
     if regime_r:
         rdf = regime_r.to_dataframe()
         if not rdf.empty:
-            for _, row in rdf.iterrows():
+            records = rdf.to_dict(orient="records")
+            for row in records:
                 state = (
                     str(row.get("state", "")).replace("PatientState.", "")
                     if "state" in rdf.columns
@@ -504,14 +1072,17 @@ def get_patient(patient_id: int):
 
     # VaR fan chart data
     var_fan = None
-    series_pts = all_series.get(patient_id, [])
-    if var_ex and series_pts:
-        dates = [str(p.date) for p in series_pts]
-        scores = [p.value for p in series_pts]
-        last_date = pd.Timestamp(series_pts[-1].date)
+    series_compact = all_series.get(patient_id, None)
+    if var_ex and series_compact:
+        dates = [str(d) for d in series_compact["dates"]]
+        scores = list(series_compact["values"])
+        last_date = pd.Timestamp(series_compact["dates"][-1])
         delta = (
-            (pd.Timestamp(series_pts[-1].date) - pd.Timestamp(series_pts[-2].date)).days
-            if len(series_pts) >= 2
+            (
+                pd.Timestamp(series_compact["dates"][-1])
+                - pd.Timestamp(series_compact["dates"][-2])
+            ).days
+            if len(series_compact["dates"]) >= 2
             else 7
         )
         future_dates = [
@@ -536,7 +1107,7 @@ def get_patient(patient_id: int):
     nlp_bars = []
     if nlp_df is not None and not nlp_df.empty and "nlp_composite" in nlp_df.columns:
         date_col = "visit_date" if "visit_date" in nlp_df.columns else nlp_df.columns[0]
-        for _, row in nlp_df.iterrows():
+        for row in nlp_df.to_dict(orient="records"):
             nlp_bars.append(
                 _safe_dict(
                     {
@@ -550,7 +1121,7 @@ def get_patient(patient_id: int):
     nli_scores = ctx["nli_scores_cache"].get(patient_id, [])
 
     # Lab time series
-    patient_labs = lab_df[lab_df["patient_id"] == patient_id].copy()
+    patient_labs = get_patient_labs(lab_df, patient_id)
     lab_series = {}
     if not patient_labs.empty:
         top_tests = (
@@ -584,7 +1155,7 @@ def get_patient(patient_id: int):
             for c in ["ÖYKÜ", "YAKINMA", "Muayene Notu", "Kontrol Notu"]
             if c in ana_patient.columns
         ]
-        for _, row in ana_patient.head(5).iterrows():
+        for row in ana_patient.head(5).to_dict(orient="records"):
             note = {"date": str(row.get("visit_date", "—")), "entries": []}
             for col in text_cols:
                 val = row.get(col, "")
@@ -607,7 +1178,7 @@ def get_patient(patient_id: int):
 
 
 @app.get("/api/patient/{patient_id}/outcome")
-def get_patient_outcome(patient_id: int):
+def get_patient_outcome(patient_id: str):
     """Outcome predictor data for a patient."""
     ctx = _load_pipeline()
     profiles = ctx["profiles"]
@@ -619,39 +1190,85 @@ def get_patient_outcome(patient_id: int):
             status_code=404, detail="No outcome profile for this patient"
         )
 
-    # CSI gauge
-    csi = {"score": round(profile.csi_score, 1), "tier": profile.csi_tier}
+    # ECI gauge — replaces old CSI gauge
+    eci_data = ctx["eci_by_pid"].get(patient_id, {})
+    eci = {
+        "score": round(float(eci_data["eci_score"]), 1)
+        if eci_data.get("eci_score") is not None
+        else None,
+        "rating": eci_data.get("eci_rating"),
+        "rating_label": eci_data.get("eci_rating_label"),
+        "visit_intensity": round(float(eci_data["visit_intensity"]), 1)
+        if eci_data.get("visit_intensity") is not None
+        else None,
+        "med_burden": round(float(eci_data["med_burden"]), 1)
+        if eci_data.get("med_burden") is not None
+        else None,
+        "diagnostic_intensity": round(float(eci_data["diagnostic_intensity"]), 1)
+        if eci_data.get("diagnostic_intensity") is not None
+        else None,
+        "trajectory_cost": round(float(eci_data["trajectory_cost"]), 1)
+        if eci_data.get("trajectory_cost") is not None
+        else None,
+    }
 
     # Narrative
     narrative = predict_care_duration_narrative(profile)
 
-    # Feature contributions
+    # ECI component breakdown (replaces old CSI feature contributions)
     feature_bar = []
-    if profile.feature_contributions:
-        for k, v in profile.feature_contributions.items():
-            feature_bar.append(
-                {"feature": k.replace("_", " ").title(), "value": round(v, 1)}
-            )
+    _eci_components = [
+        ("Visit Intensity", eci.get("visit_intensity")),
+        ("Medication Burden", eci.get("med_burden")),
+        ("Diagnostic Intensity", eci.get("diagnostic_intensity")),
+        ("Clinical Trajectory", eci.get("trajectory_cost")),
+    ]
+    for label, val in _eci_components:
+        if val is not None:
+            feature_bar.append({"feature": label, "value": val})
 
-    # Cohort ranking
+    # Cohort ranking — neighborhood only (±15 around selected patient) + percentile
+    # Now uses ECI score instead of CSI
+    eci_df = ctx["eci_df"]
     cohort_ranking = []
-    if not profiles_df.empty:
-        rank_df = profiles_df.sort_values("csi_score").copy()
-        for _, row in rank_df.iterrows():
-            cohort_ranking.append(
-                {
-                    "patient_id": int(row["patient_id"]),
-                    "label": f"P-{str(int(row['patient_id']))[-4:]}",
-                    "csi_score": round(float(row["csi_score"]), 1),
-                    "is_selected": int(row["patient_id"]) == patient_id,
-                }
-            )
+    patient_percentile = None
+    if not eci_df.empty:
+        rank_df = (
+            eci_df[["patient_id", "eci_score"]]
+            .sort_values("eci_score")
+            .reset_index(drop=True)
+        )
+        total_patients = len(rank_df)
+        patient_idx = rank_df.index[
+            rank_df["patient_id"].astype(str) == str(patient_id)
+        ].tolist()
+        if patient_idx:
+            idx = patient_idx[0]
+            patient_percentile = round((idx / max(total_patients - 1, 1)) * 100, 1)
+            # Window: ±15 around the patient
+            window_start = max(0, idx - 15)
+            window_end = min(total_patients, idx + 16)
+            window_df = rank_df.iloc[window_start:window_end]
+            for row in window_df.to_dict(orient="records"):
+                cohort_ranking.append(
+                    {
+                        "patient_id": str(row["patient_id"]),
+                        "label": f"P-{str(row['patient_id'])[-6:]}",
+                        "eci_score": round(float(row["eci_score"]), 1),
+                        "is_selected": str(row["patient_id"]) == str(patient_id),
+                    }
+                )
 
     # Feature correlations
     corr_data = []
-    corr_df = compute_feature_correlations(profiles_df, target="total_visits")
+    global _correlation_cache
+    if _correlation_cache is None:
+        _correlation_cache = compute_feature_correlations(
+            profiles_df, target="total_visits"
+        )
+    corr_df = _correlation_cache
     if not corr_df.empty:
-        for _, row in corr_df.iterrows():
+        for row in corr_df.to_dict(orient="records"):
             corr_data.append(
                 _safe_dict(
                     {
@@ -665,10 +1282,12 @@ def get_patient_outcome(patient_id: int):
             )
 
     return {
-        "csi": csi,
+        "eci": eci,
         "narrative": narrative,
         "feature_bar": feature_bar,
         "cohort_ranking": cohort_ranking,
+        "patient_percentile": patient_percentile,
+        "cohort_total": int(len(eci_df)) if not eci_df.empty else 0,
         "feature_correlations": corr_data,
     }
 
@@ -682,8 +1301,17 @@ def get_validation():
     summary = []
     val_df = validation_summary_df(validation_results)
     if not val_df.empty:
-        for _, row in val_df.iterrows():
-            summary.append(_safe_dict(row.to_dict()))
+        for idx, row_dict in enumerate(val_df.to_dict(orient="records")):
+            details = (
+                validation_results[idx].details
+                if idx < len(validation_results)
+                and validation_results[idx].details is not None
+                else {}
+            )
+            if details.get("reason") == "constant_input":
+                row_dict["Value"] = "N/A (constant input)"
+                row_dict["p-value"] = "N/A (constant input)"
+            summary.append(_safe_dict(row_dict))
 
     experiments = []
     for res in validation_results:
@@ -703,6 +1331,7 @@ def get_validation():
                     "n_samples": res.n_samples,
                     "conclusion": res.conclusion,
                     "clinical_meaning": res.clinical_meaning,
+                    "benchmark": res.benchmark,
                     "details": res.details if res.details else None,
                 }
             )
@@ -722,8 +1351,9 @@ async def chat(req: ChatRequest):
         user_text = last_user[-1].get("content", "")[:120] if last_user else ""
 
     logger.info(
-        "CHAT START | patient=%s | msgs=%d | user=%r",
+        "CHAT START | patient=%s | tab=%s | msgs=%d | user=%r",
         req.patient_id,
+        req.active_tab,
         len(req.messages),
         user_text,
     )
@@ -734,17 +1364,27 @@ async def chat(req: ChatRequest):
         pid = req.patient_id
 
         profile = ctx["profiles"].get(pid)
+        profiles_df = ctx["profiles_df"]
         composites_df = ctx["composites"]
-        comp_row = (
-            composites_df[composites_df["patient_id"] == pid]
-            if not composites_df.empty
-            else None
-        )
+        composites_idx = ctx["composites_idx"]
+        comp_row = None
+        if pid in composites_idx:
+            comp_row = composites_df.iloc[[composites_idx[pid]]]
         regimes = ctx["regimes"]
         regime_r = regimes.get(pid)
         _lks = regime_r.last_known_state() if regime_r else None
         regime_state = _lks.value if _lks is not None else "Insufficient Data"
         var_result = ctx["var_results"].get(pid)
+        var_summary = ctx["var_summary"]
+
+        # Use pre-cached KPI scalars
+        n_patients = ctx["kpi_n_patients"]
+        mean_score = ctx["kpi_mean_score"]
+        n_high_risk = ctx["kpi_n_high_risk"]
+        n_critical = ctx["kpi_n_critical"]
+        total_rx = ctx["kpi_total_rx"]
+        rating_dist = ctx["kpi_rating_dist"]
+        regime_dist = ctx["kpi_regime_dist"]
 
         patient_context = build_patient_context(
             patient_id=pid,
@@ -757,6 +1397,20 @@ async def chat(req: ChatRequest):
             lab_df=ctx["lab_df"],
             rec_df=ctx["rec_df"],
         )
+        cohort_context = build_cohort_context(
+            active_tab=req.active_tab,
+            kpi={
+                "n_patients": n_patients,
+                "mean_score": round(mean_score, 1),
+                "n_high_risk": n_high_risk,
+                "n_critical": n_critical,
+                "total_rx": total_rx,
+            },
+            rating_distribution=rating_dist,
+            regime_distribution=regime_dist,
+            var_summary=var_summary,
+        )
+        chat_context = f"{cohort_context}\n\n{patient_context}"
     except Exception as exc:
         logger.error(
             "CHAT CONTEXT BUILD FAILED | patient=%s | error=%s",
@@ -771,7 +1425,7 @@ async def chat(req: ChatRequest):
     async def sse_generator():
         token_count = 0
         try:
-            async for token in stream_chat_response(req.messages, patient_context):
+            async for token in stream_chat_response(req.messages, chat_context):
                 token_count += 1
                 # JSON-encode tokens so newlines / special chars don't break SSE framing
                 yield f"data: {json.dumps(token)}\n\n"

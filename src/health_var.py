@@ -35,7 +35,7 @@ from .health_index import SeriesPoint
 
 @dataclass
 class HealthVaRResult:
-    patient_id: int
+    patient_id: str
     current_score: float
     # Fan chart percentiles of the horizon distribution
     p05: float  # Health VaR (5th percentile)
@@ -97,15 +97,13 @@ def _fallback_monte_carlo(
         return {f"p{k:02d}": v for k in [5, 25, 50, 75, 95]}
 
     current = arr[-1]
-    terminals = []
-    for _ in range(iterations):
-        path = current
-        for _ in range(horizon):
-            r = rng.choice(returns)
-            path = np.clip(path * (1.0 + r), 0, 100)
-        terminals.append(path)
 
-    terminals_arr = np.array(terminals)
+    # Vectorized MC: draw all random returns at once as a (iterations, horizon) matrix,
+    # then cumprod along the horizon axis. ~10-50x faster than the Python loop.
+    draws = rng.choice(returns, size=(iterations, horizon))
+    paths = current * np.cumprod(1.0 + draws, axis=1)
+    terminals_arr = np.clip(paths[:, -1], 0, 100)
+
     return {
         "p05": float(np.percentile(terminals_arr, 5)),
         "p25": float(np.percentile(terminals_arr, 25)),
@@ -121,7 +119,7 @@ def _fallback_monte_carlo(
 
 
 def compute_health_var(
-    patient_id: int,
+    patient_id: str,
     series_points: list[SeriesPoint],  # output of HealthIndexBuilder.to_series_points()
     horizon_draws: int = 3,
     iterations: int = 5000,
@@ -182,7 +180,7 @@ def compute_health_var(
 
 
 def compute_all_patient_vars(
-    series_by_patient: dict[int, list[SeriesPoint]],
+    series_by_patient: dict[str, list[SeriesPoint]],
     horizon_draws: int = 3,
     iterations: int = 5000,
     seed: int = 42,
@@ -206,3 +204,118 @@ def compute_all_patient_vars(
                 }
             )
     return pd.DataFrame(rows).sort_values("var_pct").reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Parallel batch computation (for 196K patients)
+# ---------------------------------------------------------------------------
+
+
+def _compute_var_worker(args: tuple) -> dict | None:
+    """Worker function for parallel VaR computation.
+    Takes a tuple to be compatible with ProcessPoolExecutor.map().
+    """
+    pid, scores, horizon_draws, iterations, seed = args
+    if len(scores) < 2:
+        return None
+
+    # Filter NaN values
+    clean = [s for s in scores if not np.isnan(s)]
+    if len(clean) < 2:
+        return None
+    current = clean[-1]
+
+    fan = _fallback_monte_carlo(clean, iterations, horizon_draws, seed)
+
+    p05 = fan["p05"]
+    var_pct = (p05 - current) / max(current, 1) * 100.0
+    cvar_pct = var_pct * 1.3 if var_pct < 0 else 0.0
+    tier, label = _assign_risk_tier(var_pct)
+
+    return {
+        "patient_id": pid,
+        "current_score": round(current, 2),
+        "p05": round(p05, 2),
+        "p25": round(fan["p25"], 2),
+        "p50": round(fan["p50"], 2),
+        "p75": round(fan["p75"], 2),
+        "p95": round(fan["p95"], 2),
+        "var_pct": round(var_pct, 2),
+        "cvar_pct": round(cvar_pct, 2),
+        "health_var_score": round(p05, 2),
+        "median_forecast": round(fan["p50"], 2),
+        "risk_tier": tier,
+        "risk_label": label,
+    }
+
+
+def compute_all_vars_parallel(
+    series_by_patient: dict[str, list[SeriesPoint]],
+    horizon_draws: int = 3,
+    iterations: int = 3000,
+    seed: int = 42,
+    max_workers: int | None = None,
+) -> tuple[dict[str, HealthVaRResult], pd.DataFrame]:
+    """
+    Compute VaR for all patients using ThreadPoolExecutor.
+
+    Returns (var_results_by_pid, var_summary_df) — the same structure api.py expects.
+    Uses threads (not processes) because the GIL is released during numpy operations
+    and ThreadPool avoids the overhead of pickling large data across processes.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import os
+
+    if max_workers is None:
+        max_workers = min(os.cpu_count() or 4, 8)
+
+    # Prepare work items: extract scores from SeriesPoint lists
+    work = []
+    for pid, series in series_by_patient.items():
+        scores = [sp.value for sp in series]
+        work.append((pid, scores, horizon_draws, iterations, seed))
+
+    results_dict: dict[str, HealthVaRResult] = {}
+    summary_rows: list[dict] = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_compute_var_worker, w): w[0] for w in work}
+        for future in as_completed(futures):
+            result = future.result()
+            if result is None:
+                continue
+            pid = result["patient_id"]
+            # Build HealthVaRResult for the dict
+            results_dict[pid] = HealthVaRResult(
+                patient_id=pid,
+                current_score=result["current_score"],
+                p05=result["p05"],
+                p25=result["p25"],
+                p50=result["p50"],
+                p75=result["p75"],
+                p95=result["p95"],
+                var_pct=result["var_pct"],
+                cvar_pct=result["cvar_pct"],
+                horizon_draws=horizon_draws,
+                n_iterations=iterations,
+                risk_tier=result["risk_tier"],
+                risk_label=result["risk_label"],
+            )
+            summary_rows.append(
+                {
+                    "patient_id": pid,
+                    "current_score": result["current_score"],
+                    "var_pct": result["var_pct"],
+                    "health_var_score": result["health_var_score"],
+                    "median_forecast": result["median_forecast"],
+                    "risk_tier": result["risk_tier"],
+                    "risk_label": result["risk_label"],
+                }
+            )
+
+    summary_df = (
+        pd.DataFrame(summary_rows).sort_values("var_pct").reset_index(drop=True)
+        if summary_rows
+        else pd.DataFrame()
+    )
+    return results_dict, summary_df

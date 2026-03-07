@@ -37,18 +37,20 @@ export function getDownsideVarCue(varPct: number): MetricCue {
   return cue("Severe downside tail", "bad", "High deterioration exposure under current regime.");
 }
 
-export function getCSICue(score: number): MetricCue {
-  if (score >= 75) return cue("Critical severity tier", "bad", "Immediate attention required.");
-  if (score >= 50) return cue("High severity tier", "warn", "Active intervention recommended.");
-  if (score >= 25) return cue("Moderate severity tier", "warn", "Enhanced monitoring advised.");
-  return cue("Low severity tier", "good", "Routine monitoring is typically sufficient.");
+export function getECICue(score: number): MetricCue {
+  if (score >= 75) return cue("Very High Cost tier (B/CCC)", "bad", "Expected cost intensity is in the top quartile.");
+  if (score >= 60) return cue("High Cost tier (BB)", "warn", "Above-average resource utilization expected.");
+  if (score >= 45) return cue("Above Average Cost (BBB)", "warn", "Moderate cost exposure; monitor trajectory.");
+  if (score >= 30) return cue("Moderate Cost tier (A)", "neutral", "Cost profile within normal range.");
+  if (score >= 15) return cue("Low Cost tier (AA)", "good", "Below-average expected cost intensity.");
+  return cue("Minimal Cost tier (AAA)", "good", "Lowest expected cost intensity in cohort.");
 }
 
-export function getHighRiskLoadCue(nHighRisk: number, nPatients: number): MetricCue {
-  const ratio = nPatients > 0 ? nHighRisk / nPatients : 0;
-  if (ratio < 0.1) return cue("Contained high-risk load", "good", `${(ratio * 100).toFixed(0)}% of cohort flagged high-risk.`);
-  if (ratio < 0.25) return cue("Moderate high-risk load", "warn", `${(ratio * 100).toFixed(0)}% of cohort flagged high-risk.`);
-  return cue("Heavy high-risk load", "bad", `${(ratio * 100).toFixed(0)}% of cohort flagged high-risk.`);
+export function getMeanECICue(meanEci: number): MetricCue {
+  if (meanEci >= 65) return cue("High cohort cost exposure", "bad", `Mean ECI ${meanEci.toFixed(1)} — elevated resource demand across the cohort.`);
+  if (meanEci >= 50) return cue("Moderate cohort cost", "warn", `Mean ECI ${meanEci.toFixed(1)} — typical distribution expected.`);
+  if (meanEci >= 35) return cue("Contained cohort cost", "neutral", `Mean ECI ${meanEci.toFixed(1)} — cost exposure is manageable.`);
+  return cue("Low cohort cost", "good", `Mean ECI ${meanEci.toFixed(1)} — cohort cost intensity is favorable.`);
 }
 
 export function getCriticalCountCue(nCritical: number): MetricCue {

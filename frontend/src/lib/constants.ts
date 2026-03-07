@@ -48,11 +48,22 @@ export const RISK_TIER_EMOJI: Record<string, string> = {
   RED: "\u{1F534}",
 };
 
-export const CSI_TIER_COLORS: Record<string, string> = {
-  LOW: "#2ECC71",
-  MODERATE: "#F39C12",
-  HIGH: "#E67E22",
-  CRITICAL: "#E74C3C",
+export const ECI_RATING_COLORS: Record<string, string> = {
+  AAA: "#2ECC71",
+  AA: "#27AE60",
+  A: "#F39C12",
+  BBB: "#E67E22",
+  BB: "#E74C3C",
+  "B/CCC": "#9B59B6",
+};
+
+export const ECI_RATING_LABELS: Record<string, string> = {
+  AAA: "Minimal Cost",
+  AA: "Low Cost",
+  A: "Moderate Cost",
+  BBB: "Above Average Cost",
+  BB: "High Cost",
+  "B/CCC": "Very High Cost",
 };
 
 export const TAB_BACKGROUNDS = [

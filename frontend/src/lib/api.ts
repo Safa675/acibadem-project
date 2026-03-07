@@ -1,4 +1,11 @@
-import type { CohortData, PatientData, OutcomeData, ValidationData, ChatMessage } from "./types";
+import type {
+  CohortData,
+  PatientData,
+  OutcomeData,
+  ValidationData,
+  ChatMessage,
+  PatientSearchResponse,
+} from "./types";
 
 function resolveApiBase(): string {
   const configured = process.env.NEXT_PUBLIC_API_URL?.trim();
@@ -39,20 +46,45 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export async function getPatients(): Promise<{ patients: number[] }> {
+export async function getPatients(): Promise<{ patients: string[]; total: number }> {
   return fetchJSON("/api/patients");
 }
 
-export async function getCohort(): Promise<CohortData> {
-  return fetchJSON<CohortData>("/api/cohort");
+export async function searchPatients(
+  q: string,
+  limit: number = 20
+): Promise<PatientSearchResponse> {
+  const params = new URLSearchParams({ q, limit: String(limit) });
+  return fetchJSON<PatientSearchResponse>(`/api/patients/search?${params}`);
 }
 
-export async function getPatient(patientId: number): Promise<PatientData> {
-  return fetchJSON<PatientData>(`/api/patient/${patientId}`);
+export interface CohortParams {
+  page?: number;
+  per_page?: number;
+  sort_by?: string;
+  order?: "asc" | "desc";
+  rating?: string;
+  regime?: string;
 }
 
-export async function getPatientOutcome(patientId: number): Promise<OutcomeData> {
-  return fetchJSON<OutcomeData>(`/api/patient/${patientId}/outcome`);
+export async function getCohort(params: CohortParams = {}): Promise<CohortData> {
+  const qs = new URLSearchParams();
+  if (params.page) qs.set("page", String(params.page));
+  if (params.per_page) qs.set("per_page", String(params.per_page));
+  if (params.sort_by) qs.set("sort_by", params.sort_by);
+  if (params.order) qs.set("order", params.order);
+  if (params.rating) qs.set("rating", params.rating);
+  if (params.regime) qs.set("regime", params.regime);
+  const query = qs.toString();
+  return fetchJSON<CohortData>(`/api/cohort${query ? `?${query}` : ""}`);
+}
+
+export async function getPatient(patientId: string, options?: RequestInit): Promise<PatientData> {
+  return fetchJSON<PatientData>(`/api/patient/${patientId}`, options);
+}
+
+export async function getPatientOutcome(patientId: string, options?: RequestInit): Promise<OutcomeData> {
+  return fetchJSON<OutcomeData>(`/api/patient/${patientId}/outcome`, options);
 }
 
 export async function getValidation(): Promise<ValidationData> {
@@ -61,7 +93,8 @@ export async function getValidation(): Promise<ValidationData> {
 
 export async function sendChatMessage(
   messages: ChatMessage[],
-  patientId: number,
+  patientId: string,
+  activeTab: string,
   onToken: (token: string) => void
 ): Promise<void> {
   let res: Response;
@@ -69,7 +102,11 @@ export async function sendChatMessage(
     res = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages, patient_id: patientId }),
+      body: JSON.stringify({
+        messages,
+        patient_id: patientId,
+        active_tab: activeTab,
+      }),
     });
   } catch {
     throw new Error(`Could not reach API at ${API_BASE}/api/chat`);

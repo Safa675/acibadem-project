@@ -24,6 +24,21 @@ cd Acıbadem/
 ./start.sh
 ```
 
+`start.sh` now enforces a single frontend dev instance per repo:
+- If an existing `next dev` for this project is already running, it is reused.
+- If `3000` is busy, it picks the next free port and prints the actual URL.
+- If a stale `frontend/.next/dev/lock` exists with no running frontend, it is removed automatically.
+- Backend defaults are RAM-first: `ILAY_SKIP_NLP=1` (NLP pipeline off) and no `uvicorn --reload`.
+- To override for debugging: `ILAY_SKIP_NLP=0 ILAY_BACKEND_RELOAD=1 ./start.sh`
+
+If startup was interrupted and you want a hard reset:
+
+```bash
+pkill -f "/home/safa/Documents/Acıbadem/frontend/node_modules/.bin/next dev" || true
+rm -f /home/safa/Documents/Acıbadem/frontend/.next/dev/lock
+./start.sh
+```
+
 ---
 
 ## Directory Structure
@@ -452,34 +467,53 @@ Weight evidence: 55% labs/vitals (structured data dominates clinical prediction 
 
 **Purpose:** A severity burden score in **[0, 100]** integrating six clinical dimensions (0 = minimal burden, 100 = maximum burden) oriented to predict healthcare utilisation.
 
+**Why rule-based?** Small cohort (n=9 patients) is insufficient for ML training. Instead, we demonstrate a **feature engineering pipeline** that will work on larger cohorts, and validate signal quality using Spearman rank correlation.
+
+#### CSI Component Weights (Sum = 1.0)
+
+| Component | Weight | Rationale |
+|---|---|---|
+| **Health Score Trend** | **25%** | Trajectory matters most — declining patients need intervention |
+| **Lab Volatility** | **20%** | Instability predicts adverse events (high std = erratic physiology) |
+| **Critical Regime Fraction** | **20%** | Time spent in Critical state = direct severity measure |
+| **NLP Signal** | **15%** | Clinical language detects deterioration before labs change |
+| **Prescription Intensity** | **10%** | High Rx velocity = active disease escalation |
+| **Comorbidity Burden** | **10%** | Chronic conditions increase baseline risk |
+
 #### Step 1 — Six component normalisation (each → [0, 100])
 
-| Component | Raw feature | Formula |
-|---|---|---|
-| **Health trend** | OLS slope of health scores (pts/observation) | `clip((−slope + 5) / 10 × 100, 0, 100)` — −5 pts/visit → 100, +5 pts/visit → 0 |
-| **Lab volatility** | Std dev of health score series | `clip(std / 20 × 100, 0, 100)` — std of 20 → 100 |
-| **Critical fraction** | Fraction of regime observations in Critical state | `clip(fraction × 100, 0, 100)` |
-| **NLP signal** | Mean NLP composite across all visits | `clip((−mean_nlp + 1) / 2 × 100, 0, 100)` — −1 (worst) → 100 |
-| **Prescription intensity** | Unique prescriptions per 30 days | `clip(rx_velocity / 10 × 100, 0, 100)` — 10 Rx/month → 100 |
-| **Comorbidity burden** | Count of active comorbidity flags | `clip(n_comorbidities / 4 × 100, 0, 100)` — 4 or more → 100 |
+| Component | Raw feature | Normalization formula | Interpretation |
+|---|---|---|---|
+| **Health trend** | OLS slope (pts/observation) | `clip((−slope + 5) / 10 × 100, 0, 100)` | −5 pts/visit → 100 (worst), +5 pts/visit → 0 (best) |
+| **Lab volatility** | Std dev of health scores | `clip(std / 20 × 100, 0, 100)` | std = 20 → 100 (very unstable) |
+| **Critical fraction** | Fraction in Critical state | `clip(fraction × 100, 0, 100)` | 100% Critical → 100 |
+| **NLP signal** | Mean NLP composite [−1, +1] | `clip((−mean_nlp + 1) / 2 × 100, 0, 100)` | −1 (deterioration) → 100 |
+| **Prescription intensity** | Rx per 30 days | `clip(rx_velocity / 10 × 100, 0, 100)` | 10+ Rx/month → 100 |
+| **Comorbidity burden** | Count of comorbidities | `clip(n_comorbidities / 4 × 100, 0, 100)` | 4+ conditions → 100 |
 
-The health trend slope uses ordinary least-squares:
+**Formulas:**
 
+Health trend slope uses ordinary least-squares (OLS):
 ```
 slope = Σ (x_i − x̄)(y_i − ȳ) / Σ (x_i − x̄)²    where x = observation index, y = health_score
 ```
 
-Prescription velocity:
-
+Prescription velocity (medications per month):
 ```
 rx_velocity = (n_dated_prescriptions / date_span_days) × 30
 ```
 
-Comorbidities are counted from 6 binary flag columns in `anadata.ods`: hypertension, cardiovascular disease, diabetes, blood disorders, other chronic diseases, and surgical history.
+Comorbidities are counted from 6 binary flag columns in `anadata.ods`:
+- Hipertansiyon Hastada (Hypertension)
+- Kalp Damar Hastada (Cardiovascular disease)
+- Diyabet Hastada (Diabetes)
+- Kan Hastalıkları Hastada (Blood disorders)
+- Kronik Hastalıklar Diğer (Other chronic diseases)
+- Ameliyat Geçmişi (Surgical history)
 
 #### Step 2 — Weighted sum
 
-```
+```python
 CSI = 0.25 × health_trend_component
     + 0.20 × lab_volatility_component
     + 0.20 × critical_fraction_component
@@ -490,16 +524,61 @@ CSI = 0.25 × health_trend_component
 CSI = clip(CSI, 0, 100)
 ```
 
+**Feature contributions (explainability):**
+Each component's contribution is tracked separately for interpretability:
+```python
+feature_contributions = {
+    "health_trend": health_trend_component × 0.25,      # e.g., 19.5 pts
+    "lab_volatility": lab_volatility_component × 0.20,  # e.g., 4.2 pts
+    "critical_fraction": critical_fraction_component × 0.20,  # e.g., 12.0 pts
+    "nlp_signal": nlp_signal_component × 0.15,          # e.g., 10.9 pts
+    "prescription_intensity": prescription_intensity × 0.10,  # e.g., 4.0 pts
+    "comorbidity_burden": comorbidity_component × 0.10, # e.g., 7.5 pts
+}
+```
+
+This allows clinicians to see **which factor is driving the risk** (e.g., "Health trend is the dominant contributor — patient is declining fast").
+
 #### Step 3 — Tier assignment
 
-| CSI ≥ | Tier | Label |
-|---|---|---|
-| 75 | **CRITICAL** | Immediate clinical attention required |
-| 50 | **HIGH** | Active intervention recommended |
-| 25 | **MODERATE** | Enhanced monitoring needed |
-| 0 | **LOW** | Routine monitoring |
+| CSI ≥ | Tier | Label | Clinical Action |
+|---|---|---|---|
+| 75 | **CRITICAL** | Immediate clinical attention required | Prioritize now — review within hours |
+| 50 | **HIGH** | Active intervention recommended | Review within 24-48h |
+| 25 | **MODERATE** | Enhanced monitoring needed | Review within 1 week |
+| 0 | **LOW** | Routine monitoring | Standard care — review monthly |
 
-**Output:** `csi_score`, `csi_tier`, `csi_label`, and `feature_contributions` dict (each component's weighted contribution in CSI points).
+**Output:** `csi_score` (0-100), `csi_tier` (LOW/MODERATE/HIGH/CRITICAL), `csi_label`, and `feature_contributions` dict.
+
+#### Example Calculation
+
+```
+Patient #42:
+  - Health trend slope: -2.8 pts/visit (declining)
+  - Lab volatility (std): 4.2
+  - Critical fraction: 60% (3 of 5 visits)
+  - Mean NLP: -0.45 (negative language)
+  - Rx velocity: 4.0 per month
+  - Comorbidities: 3 (HTN, DM, CVD)
+
+Components:
+  - Health trend: (-(-2.8) + 5) / 10 × 100 = 78.0 → 78.0 × 0.25 = 19.5 pts
+  - Lab volatility: 4.2 / 20 × 100 = 21.0 → 21.0 × 0.20 = 4.2 pts
+  - Critical fraction: 0.60 × 100 = 60.0 → 60.0 × 0.20 = 12.0 pts
+  - NLP signal: (-(-0.45) + 1) / 2 × 100 = 72.5 → 72.5 × 0.15 = 10.9 pts
+  - Rx intensity: 4.0 / 10 × 100 = 40.0 → 40.0 × 0.10 = 4.0 pts
+  - Comorbidity: 3 / 4 × 100 = 75.0 → 75.0 × 0.10 = 7.5 pts
+
+CSI = 19.5 + 4.2 + 12.0 + 10.9 + 4.0 + 7.5 = 58.1 → HIGH tier
+Dominant factor: Health trend (19.5 pts) — patient is declining
+```
+
+#### Validation
+
+CSI is validated against **total healthcare utilization** (visit count) using Spearman rank correlation:
+- **Hypothesis:** Higher CSI → more visits
+- **Expected:** ρ > 0.4 (moderate positive correlation)
+- **Interpretation:** If CSI correlates with utilization, it captures real clinical burden
 
 ---
 

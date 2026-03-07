@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import type { ChangeEvent } from "react";
 import {
   BarChart,
   Bar,
@@ -13,18 +13,26 @@ import {
   ResponsiveContainer,
   LabelList,
 } from "recharts";
-import type { OutcomeData } from "@/lib/types";
-import { ACCENT, CHART_COLORS } from "@/lib/constants";
-import { csiColor } from "@/lib/utils";
+import type { OutcomeData, PatientFilters } from "@/lib/types";
+import { ACCENT, CHART_COLORS, ECI_RATING_COLORS } from "@/lib/constants";
 import InfoTooltip from "@/components/ui/InfoTooltip";
 import MetricCue from "@/components/ui/MetricCue";
-import { getCSICue } from "@/lib/interpretation";
+import { getECICue } from "@/lib/interpretation";
 import useStaggeredReveal from "@/hooks/useStaggeredReveal";
+import PatientSearch from "@/components/ui/PatientSearch";
 
 interface Props {
   data: OutcomeData | null;
   loading: boolean;
-  selectedPatientId: number;
+  switching: boolean;
+  selectedPatientId: string | null;
+  patients: string[];
+  filteredPatients: string[];
+  onPatientChange: (e: ChangeEvent<HTMLSelectElement>) => void;
+  onPatientSelect: (patientId: string | null) => void;
+  loadingPatients: boolean;
+  filters: PatientFilters;
+  onFiltersChange: (filters: PatientFilters) => void;
 }
 
 const FEATURE_DESCRIPTIONS: Record<string, string> = {
@@ -41,7 +49,7 @@ function humanizeFeature(raw: string): string {
     .split("_")
     .map((part) => {
       const token = part.toLowerCase();
-      if (token === "csi") return "CSI";
+      if (token === "eci") return "ECI";
       if (token === "nlp") return "NLP";
       if (token === "var") return "VaR";
       if (token === "los") return "LOS";
@@ -68,9 +76,9 @@ function FeatureAxisTick(props: {
   );
 }
 
-/* ---------- CSI Gauge (SVG semicircle) ---------- */
+/* ---------- ECI Gauge (SVG semicircle) ---------- */
 
-function CSIGauge({ score, tier }: { score: number; tier: string }) {
+function ECIGauge({ score, rating, ratingLabel }: { score: number; rating: string; ratingLabel: string }) {
   const cx = 120;
   const cy = 110;
   const r = 90;
@@ -170,7 +178,7 @@ function CSIGauge({ score, tier }: { score: number; tier: string }) {
           border: `1px solid ${gaugeColor}44`,
         }}
       >
-        {tier}
+        {rating} — {ratingLabel}
       </span>
     </div>
   );
@@ -233,10 +241,22 @@ function ChartTooltipContent({
 
 /* ---------- Main Component ---------- */
 
-export default function OutcomePredictor({ data, loading, selectedPatientId }: Props) {
+export default function OutcomePredictor({
+  data,
+  loading,
+  switching,
+  selectedPatientId,
+  patients,
+  filteredPatients,
+  onPatientChange,
+  onPatientSelect,
+  loadingPatients,
+  filters,
+  onFiltersChange,
+}: Props) {
   const reveal = useStaggeredReveal(4, { baseDelayMs: 40, stepMs: 140, threshold: 0.15 });
 
-  if (loading) {
+  if (loading && !data) {
     return (
       <div className="loading-state">
         <div className="loading-spinner" />
@@ -256,7 +276,7 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
   const featureBarData = data.feature_bar.map((row) => ({
     ...row,
     feature_label: humanizeFeature(row.feature),
-    feature_desc: FEATURE_DESCRIPTIONS[row.feature] ?? `${humanizeFeature(row.feature)} contribution to CSI scoring.`,
+    feature_desc: FEATURE_DESCRIPTIONS[row.feature] ?? `${humanizeFeature(row.feature)} contribution to ECI scoring.`,
   }));
 
   const featureCorrelationData = data.feature_correlations.map((row) => ({
@@ -269,13 +289,38 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
   const featureCorrelationLookup = Object.fromEntries(featureCorrelationData.map((row) => [row.feature_label, row.feature_desc]));
 
   return (
-    <div className="space-y-6">
+    <div className="relative space-y-6">
       <div className="tab-intro tab-intro-frost frost-panel">
-        <h2 className="tab-intro-title">Outcome Predictor</h2>
-        <p className="tab-intro-subtitle">
-          Severity forecasting and feature-level explainability for downstream outcome risk.
-        </p>
+        <div className="tab-intro-header-row">
+          <div>
+            <h2 className="tab-intro-title">Patient Risk Explorer</h2>
+            <p className="tab-intro-subtitle">
+              Expected Cost Intensity analysis and component breakdown for resource planning.
+            </p>
+          </div>
+          <div className="app-filter tab-inline-filter" style={{ minWidth: 220 }}>
+            <label htmlFor="patient-search-outcome" className="app-filter-label">
+              Patient
+            </label>
+            <PatientSearch
+              id="patient-search-outcome"
+              selectedPatientId={selectedPatientId}
+              onSelect={(pid) => onPatientSelect(pid)}
+              disabled={loadingPatients}
+              placeholder="Search patient ID..."
+            />
+          </div>
+        </div>
       </div>
+
+      {switching && (
+        <div className="tab-switch-overlay" aria-live="polite" aria-busy="true">
+          <div className="tab-switch-chip">
+            <span className="loading-spinner tab-switch-spinner" />
+            <span>Refreshing outcome analytics…</span>
+          </div>
+        </div>
+      )}
 
       {/* ---- Row 1: Gauge + Narrative ---- */}
       <div
@@ -283,16 +328,16 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
         className={`grid gap-6 lg:grid-cols-[280px_1fr] ${reveal.getRevealProps(0, "scale").staggerClass}`}
         style={reveal.getRevealProps(0, "scale").staggerStyle}
       >
-        {/* CSI Gauge */}
+        {/* ECI Gauge */}
         <div className="frost-panel flex flex-col items-center justify-center p-6">
-          <CSIGauge score={data.csi.score} tier={data.csi.tier} />
-          <MetricCue cue={getCSICue(data.csi.score)} />
+          <ECIGauge score={data.eci.score ?? 0} rating={data.eci.rating ?? "—"} ratingLabel={data.eci.rating_label ?? ""} />
+          {data.eci.score != null && <MetricCue cue={getECICue(data.eci.score)} />}
         </div>
         {/* Narrative */}
         <NarrativePanel narrative={data.narrative} />
       </div>
 
-      {/* ---- CSI Feature Decomposition ---- */}
+      {/* ---- ECI Component Breakdown ---- */}
       <div
         {...reveal.getRevealProps(1, "scale").staggerAttrs}
         className={`frost-panel p-5 ${reveal.getRevealProps(1, "scale").staggerClass}`}
@@ -300,7 +345,7 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
       >
         <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-300">
           <span className="section-label-with-info">
-            CSI Feature Decomposition
+            ECI Component Breakdown
             <InfoTooltip metricId="outcome.feature_decomposition" />
           </span>
         </h3>
@@ -325,7 +370,7 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
             <Tooltip content={<ChartTooltipContent />} />
             <Bar dataKey="value" radius={[0, 4, 4, 0]} maxBarSize={22} isAnimationActive animationDuration={980} animationBegin={140}>
               {data.feature_bar.map((entry, idx) => (
-                <Cell key={idx} fill={csiColor(entry.value)} />
+                <Cell key={idx} fill={entry.value >= 66 ? "#E74C3C" : entry.value >= 33 ? "#F39C12" : "#2ECC71"} />
               ))}
               <LabelList
                 dataKey="value"
@@ -339,7 +384,7 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
         </ResponsiveContainer>
       </div>
 
-      {/* ---- CSI Cohort Ranking ---- */}
+      {/* ---- ECI Cohort Ranking ---- */}
       <div
         {...reveal.getRevealProps(2, "scale").staggerAttrs}
         className={`frost-panel p-5 ${reveal.getRevealProps(2, "scale").staggerClass}`}
@@ -347,10 +392,21 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
       >
         <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-300">
           <span className="section-label-with-info">
-            CSI Cohort Ranking
+            ECI Cohort Ranking
             <InfoTooltip metricId="outcome.cohort_ranking" />
           </span>
         </h3>
+        {data.patient_percentile != null && (
+          <p className="mb-3 text-xs text-slate-400">
+            Patient ranks at the{" "}
+            <strong style={{ color: "#4FC3F7" }}>
+              {data.patient_percentile.toFixed(1)}th
+            </strong>{" "}
+            percentile out of{" "}
+            <strong style={{ color: "#fff" }}>{data.cohort_total.toLocaleString()}</strong>{" "}
+            patients. Showing nearest neighbors by ECI score.
+          </p>
+        )}
         <ResponsiveContainer width="100%" height={320}>
           <BarChart
             data={data.cohort_ranking}
@@ -370,7 +426,7 @@ export default function OutcomePredictor({ data, loading, selectedPatientId }: P
             />
             <YAxis tick={{ fill: CHART_COLORS.text, fontSize: 11 }} />
             <Tooltip content={<ChartTooltipContent />} />
-            <Bar dataKey="csi_score" radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive animationDuration={1050} animationBegin={180}>
+            <Bar dataKey="eci_score" radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive animationDuration={1050} animationBegin={180}>
               {data.cohort_ranking.map((entry, idx) => (
                 <Cell
                   key={idx}

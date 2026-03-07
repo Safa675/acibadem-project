@@ -1,5 +1,7 @@
 "use client";
 
+import { useMemo } from "react";
+
 import {
   ScatterChart,
   Scatter,
@@ -28,7 +30,7 @@ import Skeleton from "@/components/ui/Skeleton";
 import {
   getCohortSizeCue,
   getHealthScoreCue,
-  getHighRiskLoadCue,
+  getMeanECICue,
   getCriticalCountCue,
   getRxIntensityCue,
 } from "@/lib/interpretation";
@@ -38,6 +40,7 @@ import useStaggeredReveal from "@/hooks/useStaggeredReveal";
 interface Props {
   data: CohortData | null;
   loading: boolean;
+  onPageChange?: (page: number) => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -52,7 +55,7 @@ function ScatterTooltipContent({ active, payload }: ScatterTooltipProps) {
   if (!active || !payload?.length) return null;
   const d = payload[0].payload;
   return (
-    <div className="frost-panel" style={{ padding: "8px 12px", color: "#fff", fontSize: 13 }}>
+    <div className="frost-tooltip" style={{ padding: "8px 12px", color: "#fff", fontSize: 13 }}>
       <p style={{ margin: 0, fontWeight: 600 }}>Patient #{d.patient_id}</p>
       <p style={{ margin: "2px 0" }}>Health Index: {d.health_index_score}</p>
       <p style={{ margin: "2px 0" }}>NLP Score: {d.nlp_score}</p>
@@ -78,7 +81,7 @@ function PieTooltipContent({ active, payload }: PieTooltipProps) {
   if (!active || !payload?.length) return null;
   const d = payload[0];
   return (
-    <div className="frost-panel" style={{ padding: "8px 12px", color: "#fff", fontSize: 13 }}>
+    <div className="frost-tooltip" style={{ padding: "8px 12px", color: "#fff", fontSize: 13 }}>
       <p style={{ margin: 0 }}>
         {d.name}: <strong>{d.value}</strong>
       </p>
@@ -112,64 +115,106 @@ function LoadingSkeleton() {
   );
 }
 
+/* ------------------------------------------------------------------ */
+/*  VaR colour helpers — discrete bins                                */
+/* ------------------------------------------------------------------ */
+function varPctColor(pct: number): string {
+  const v = Math.max(0, pct);
+  if (v === 0) return "#2ECC71";
+  if (v <= 5) return "#A3E635";
+  if (v <= 15) return "#FACC15";
+  if (v <= 35) return "#FB923C";
+  return "#EF4444";
+}
+
+function floorScoreColor(score: number): string {
+  const s = Math.max(0, Math.min(100, score));
+  if (s <= 20) return "#DC2626";
+  if (s <= 40) return "#F97316";
+  if (s <= 60) return "#FACC15";
+  if (s <= 80) return "#84CC16";
+  return "#22C55E";
+}
+
 /* ================================================================== */
 /*  Main component                                                     */
 /* ================================================================== */
-export default function CohortOverview({ data, loading }: Props) {
+export default function CohortOverview({ data, loading, onPageChange }: Props) {
   const kpi = data?.kpi ?? {
     n_patients: 0,
     mean_score: 0,
-    n_high_risk: 0,
+    mean_eci: 0,
     n_critical: 0,
     total_rx: 0,
   };
   const composites = data?.composites ?? [];
+  const compositesPagination = data?.composites_pagination ?? null;
   const var_summary = data?.var_summary ?? [];
+  const varPagination = data?.var_pagination ?? null;
   const rating_distribution = data?.rating_distribution ?? {};
+  const rating_intervals = data?.rating_intervals ?? [];
   const regime_distribution = data?.regime_distribution ?? {};
   const scatter_data = data?.scatter_data ?? [];
+  const scatter_total = data?.scatter_total ?? scatter_data.length;
 
   /* ---- derived data ---- */
-  const ratingPieData = Object.entries(rating_distribution).map(([name, value], idx) => ({
-    name,
-    value,
-    patternId: `rating-pattern-${idx}`,
-  }));
-
-  const regimePieData = Object.entries(regime_distribution).map(([name, value], idx) => ({
-    name,
-    value,
-    patternId: `regime-pattern-${idx}`,
-  }));
-
-  const ratingLegendOrder = ["AAA", "AA", "A", "BBB", "BB", "B/CCC"];
-  const ratingLegendData = ratingLegendOrder
-    .filter((name) => Object.prototype.hasOwnProperty.call(rating_distribution, name))
-    .map((name) => ({
+  const ratingPieData = useMemo(() =>
+    Object.entries(rating_distribution).map(([name, value], idx) => ({
       name,
-      value: rating_distribution[name] ?? 0,
-      color: RATING_COLORS[name] ?? CHART_COLORS.neutral,
-    }));
-
-  const regimeLegendData = Object.entries(regime_distribution).map(([name, value]) => ({
-    name,
-    value,
-    color: STATE_COLORS[name] ?? CHART_COLORS.neutral,
-  }));
-
-  const sortedComposites = [...composites].sort(
-    (a, b) => b.composite_score - a.composite_score,
+      value,
+      patternId: `rating-pattern-${idx}`,
+    })),
+    [rating_distribution],
   );
+
+  const regimePieData = useMemo(() =>
+    Object.entries(regime_distribution).map(([name, value], idx) => ({
+      name,
+      value,
+      patternId: `regime-pattern-${idx}`,
+    })),
+    [regime_distribution],
+  );
+
+  const ratingIntervalByName = new Map(
+    rating_intervals.map((interval) => [interval.rating, interval.label]),
+  );
+
+  const ratingLegendData = useMemo(() => {
+    const order = ["AAA", "AA", "A", "BBB", "BB", "B/CCC"];
+    return order
+      .filter((name) => Object.prototype.hasOwnProperty.call(rating_distribution, name))
+      .map((name) => ({
+        name,
+        displayName: ratingIntervalByName.has(name)
+          ? `${name} (${ratingIntervalByName.get(name)})`
+          : name,
+        value: rating_distribution[name] ?? 0,
+        color: RATING_COLORS[name] ?? CHART_COLORS.neutral,
+      }));
+  }, [rating_distribution, ratingIntervalByName]);
+
+  const regimeLegendData = useMemo(() =>
+    Object.entries(regime_distribution).map(([name, value]) => ({
+      name,
+      value,
+      color: STATE_COLORS[name] ?? CHART_COLORS.neutral,
+    })),
+    [regime_distribution],
+  );
+
+  // Composites are pre-sorted by the API (server-side sort + pagination)
+  const sortedComposites = composites;
 
   const cohortSizeCue = getCohortSizeCue(kpi.n_patients);
   const meanScoreCue = getHealthScoreCue(kpi.mean_score);
-  const highRiskCue = getHighRiskLoadCue(kpi.n_high_risk, kpi.n_patients);
+  const meanEciCue = getMeanECICue(kpi.mean_eci);
   const criticalCue = getCriticalCountCue(kpi.n_critical);
   const rxIntensityCue = getRxIntensityCue(kpi.total_rx, kpi.n_patients);
 
   const animatedPatients = useCountUp(kpi.n_patients, 1050, 0, !!data && !loading);
   const animatedMeanScore = useCountUp(kpi.mean_score, 1150, 1, !!data && !loading);
-  const animatedHighRisk = useCountUp(kpi.n_high_risk, 1000, 0, !!data && !loading);
+  const animatedMeanEci = useCountUp(kpi.mean_eci, 1000, 1, !!data && !loading);
   const animatedCritical = useCountUp(kpi.n_critical, 1000, 0, !!data && !loading);
   const animatedTotalRx = useCountUp(kpi.total_rx, 1100, 0, !!data && !loading);
 
@@ -190,10 +235,10 @@ export default function CohortOverview({ data, loading }: Props) {
       cue: meanScoreCue,
     },
     {
-      value: Math.round(animatedHighRisk).toString(),
-      label: "High-Risk Patients",
-      metricId: "cohort.n_high_risk",
-      cue: highRiskCue,
+      value: animatedMeanEci.toFixed(1),
+      label: "Mean ECI Score",
+      metricId: "cohort.mean_eci",
+      cue: meanEciCue,
     },
     {
       value: Math.round(animatedCritical).toString(),
@@ -209,10 +254,13 @@ export default function CohortOverview({ data, loading }: Props) {
     },
   ];
 
-  const scatterByRating: Record<string, typeof scatter_data> = {};
-  scatter_data.forEach((pt) => {
-    (scatterByRating[pt.rating] ??= []).push(pt);
-  });
+  const scatterByRating = useMemo(() => {
+    const grouped: Record<string, typeof scatter_data> = {};
+    scatter_data.forEach((pt) => {
+      (grouped[pt.rating] ??= []).push(pt);
+    });
+    return grouped;
+  }, [scatter_data]);
 
   if (loading || !data) return <LoadingSkeleton />;
 
@@ -261,6 +309,11 @@ export default function CohortOverview({ data, loading }: Props) {
           <h3 className="section-heading-accent" style={{ margin: "0 0 12px", fontSize: 15, color: "#fff" }}>
             <span className="section-label-with-info">
               Cohort Risk Scatter
+              {scatter_total > scatter_data.length && (
+                <span style={{ fontSize: 11, color: "#8892A4", fontWeight: 400, marginLeft: 8 }}>
+                  (showing {scatter_data.length.toLocaleString()} of {scatter_total.toLocaleString()})
+                </span>
+              )}
               <InfoTooltip metricId="cohort.scatter" />
             </span>
           </h3>
@@ -287,20 +340,18 @@ export default function CohortOverview({ data, loading }: Props) {
                 label={{ value: "NLP Score", angle: -90, position: "insideLeft", fill: CHART_COLORS.text, fontSize: 12 }}
               />
               <Tooltip content={<ScatterTooltipContent />} />
-              {Object.entries(scatterByRating).map(([rating, points], ratingIdx) => (
+              {Object.entries(scatterByRating).map(([rating, points]) => (
                 <Scatter
                   key={rating}
                   name={rating}
                   data={points}
                   fill={RATING_COLORS[rating] ?? CHART_COLORS.neutral}
-                  isAnimationActive
-                  animationDuration={950}
-                  animationBegin={100 + ratingIdx * 120}
+                  isAnimationActive={false}
                 >
                   {points.map((pt, i) => (
                     <Cell
                       key={i}
-                      r={Math.max(4, Math.min(14, (pt.csi_score ?? 50) / 8))}
+                      r={Math.max(4, Math.min(14, (pt.eci_score ?? 50) / 8))}
                     />
                   ))}
                 </Scatter>
@@ -376,7 +427,7 @@ export default function CohortOverview({ data, loading }: Props) {
                   <li key={item.name} className="chart-legend-item">
                     <span className="chart-legend-label">
                       <span className="chart-legend-swatch" style={{ backgroundColor: item.color }} />
-                      {item.name}
+                      {item.displayName}
                     </span>
                     <span className="chart-legend-count">{item.value}</span>
                   </li>
@@ -484,11 +535,11 @@ export default function CohortOverview({ data, loading }: Props) {
               <th>NLP Score</th>
               <th>
                 <span className="section-label-with-info">
-                  CSI Score
-                  <InfoTooltip metricId="patient.summary.csi_score" />
+                  ECI Score
+                  <InfoTooltip metricId="patient.summary.eci_score" />
                 </span>
               </th>
-              <th>CSI Tier</th>
+              <th>ECI Rating</th>
               <th>Rx Count</th>
             </tr>
           </thead>
@@ -504,14 +555,77 @@ export default function CohortOverview({ data, loading }: Props) {
                 <td>{row.composite_score.toFixed(2)}</td>
                 <td>{row.health_index_score.toFixed(1)}</td>
                 <td>{row.nlp_score.toFixed(1)}</td>
-                <td>{row.csi_score != null ? row.csi_score.toFixed(1) : "—"}</td>
-                <td>{row.csi_tier ?? "—"}</td>
+                <td>{row.eci_score != null ? row.eci_score.toFixed(1) : "—"}</td>
+                <td>{row.eci_rating ?? "—"}</td>
                 <td>{row.n_prescriptions ?? "—"}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {/* ── Pagination Controls ── */}
+      {compositesPagination && compositesPagination.total_pages > 1 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 16,
+            margin: "12px 0 24px",
+            fontSize: "0.85rem",
+            color: "#B8C5D9",
+          }}
+        >
+          <button
+            className="glass"
+            style={{
+              padding: "6px 16px",
+              borderRadius: 6,
+              border: "1px solid rgba(255,255,255,0.08)",
+              color: compositesPagination.page <= 1 ? "#555" : "#4FC3F7",
+              cursor: compositesPagination.page <= 1 ? "not-allowed" : "pointer",
+              background: "rgba(26,29,39,0.6)",
+              fontWeight: 600,
+              fontSize: "0.82rem",
+            }}
+            disabled={compositesPagination.page <= 1}
+            onClick={() => onPageChange?.(compositesPagination.page - 1)}
+          >
+            Previous
+          </button>
+          <span>
+            Page <strong style={{ color: "#fff" }}>{compositesPagination.page}</strong> of{" "}
+            <strong style={{ color: "#fff" }}>{compositesPagination.total_pages}</strong>
+            <span style={{ marginLeft: 8, fontSize: "0.78rem", color: "#8892A4" }}>
+              ({compositesPagination.total} patients)
+            </span>
+          </span>
+          <button
+            className="glass"
+            style={{
+              padding: "6px 16px",
+              borderRadius: 6,
+              border: "1px solid rgba(255,255,255,0.08)",
+              color:
+                compositesPagination.page >= compositesPagination.total_pages
+                  ? "#555"
+                  : "#4FC3F7",
+              cursor:
+                compositesPagination.page >= compositesPagination.total_pages
+                  ? "not-allowed"
+                  : "pointer",
+              background: "rgba(26,29,39,0.6)",
+              fontWeight: 600,
+              fontSize: "0.82rem",
+            }}
+            disabled={compositesPagination.page >= compositesPagination.total_pages}
+            onClick={() => onPageChange?.(compositesPagination.page + 1)}
+          >
+            Next
+          </button>
+        </div>
+      )}
 
       {/* ── Health VaR Summary Table ── */}
       <h3 style={{ margin: "0 0 12px", color: "#fff" }}>
@@ -538,7 +652,12 @@ export default function CohortOverview({ data, loading }: Props) {
                   <InfoTooltip metricId="cohort.var.floor_score" />
                 </span>
               </th>
-              <th>Risk Tier</th>
+              <th>
+                <span className="section-label-with-info">
+                  Risk Tier
+                  <InfoTooltip metricId="cohort.var.risk_tier" />
+                </span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -546,8 +665,16 @@ export default function CohortOverview({ data, loading }: Props) {
               <tr key={row.patient_id}>
                 <td>{row.patient_id}</td>
                 <td>{row.current_score.toFixed(1)}</td>
-                <td>{row.downside_var_pct.toFixed(1)}%</td>
-                <td>{row.health_var_score.toFixed(1)}</td>
+                <td>
+                  <span style={{ color: varPctColor(row.downside_var_pct), fontWeight: 600 }}>
+                    {row.downside_var_pct.toFixed(1)}%
+                  </span>
+                </td>
+                <td>
+                  <span style={{ color: floorScoreColor(row.health_var_score), fontWeight: 600 }}>
+                    {row.health_var_score.toFixed(1)}
+                  </span>
+                </td>
                 <td>
                   <span
                     style={{
@@ -562,6 +689,69 @@ export default function CohortOverview({ data, loading }: Props) {
           </tbody>
         </table>
       </div>
+
+      {/* ── VaR Pagination Controls ── */}
+      {varPagination && varPagination.total_pages > 1 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 16,
+            margin: "12px 0 0",
+            fontSize: "0.85rem",
+            color: "#B8C5D9",
+          }}
+        >
+          <button
+            className="glass"
+            style={{
+              padding: "6px 16px",
+              borderRadius: 6,
+              border: "1px solid rgba(255,255,255,0.08)",
+              color: varPagination.page <= 1 ? "#555" : "#4FC3F7",
+              cursor: varPagination.page <= 1 ? "not-allowed" : "pointer",
+              background: "rgba(26,29,39,0.6)",
+              fontWeight: 600,
+              fontSize: "0.82rem",
+            }}
+            disabled={varPagination.page <= 1}
+            onClick={() => onPageChange?.(varPagination.page - 1)}
+          >
+            Previous
+          </button>
+          <span>
+            Page <strong style={{ color: "#fff" }}>{varPagination.page}</strong> of{" "}
+            <strong style={{ color: "#fff" }}>{varPagination.total_pages}</strong>
+            <span style={{ marginLeft: 8, fontSize: "0.78rem", color: "#8892A4" }}>
+              ({varPagination.total} patients)
+            </span>
+          </span>
+          <button
+            className="glass"
+            style={{
+              padding: "6px 16px",
+              borderRadius: 6,
+              border: "1px solid rgba(255,255,255,0.08)",
+              color:
+                varPagination.page >= varPagination.total_pages
+                  ? "#555"
+                  : "#4FC3F7",
+              cursor:
+                varPagination.page >= varPagination.total_pages
+                  ? "not-allowed"
+                  : "pointer",
+              background: "rgba(26,29,39,0.6)",
+              fontWeight: 600,
+              fontSize: "0.82rem",
+            }}
+            disabled={varPagination.page >= varPagination.total_pages}
+            onClick={() => onPageChange?.(varPagination.page + 1)}
+          >
+            Next
+          </button>
+        </div>
+      )}
     </div>
   );
 }

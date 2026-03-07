@@ -6,7 +6,8 @@ import type { ChatMessage } from "@/lib/types";
 import { sendChatMessage } from "@/lib/api";
 
 interface Props {
-  patientId: number;
+  patientId: string;
+  activeTabLabel: string;
 }
 
 const AVATAR_SRC = "/images/j2.png";
@@ -19,7 +20,14 @@ const SUGGESTED_PROMPTS = [
   "Any medication interactions to watch?",
 ];
 
-export default function IlayChatbot({ patientId }: Props) {
+const COHORT_PROMPTS = [
+  "What drives high-risk patients in this cohort?",
+  "How many VaR RED patients do we have and why?",
+  "Explain rating distribution vs VaR risk tiers",
+  "Compare cohort profile with selected patient",
+];
+
+export default function IlayChatbot({ patientId, activeTabLabel }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -28,6 +36,7 @@ export default function IlayChatbot({ patientId }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const previousTabRef = useRef(activeTabLabel);
 
   useEffect(() => {
     const stored = sessionStorage.getItem(SESSION_KEY);
@@ -41,6 +50,21 @@ export default function IlayChatbot({ patientId }: Props) {
   useEffect(() => {
     setMessages([]);
   }, [patientId]);
+
+  useEffect(() => {
+    if (previousTabRef.current === activeTabLabel) return;
+    previousTabRef.current = activeTabLabel;
+    setMessages((prev) => {
+      if (prev.length === 0) return prev;
+      return [
+        ...prev,
+        {
+          role: "assistant",
+          content: `[Context mode changed: ${activeTabLabel}. I can answer cohort-wide, selected-patient, or compare both. If your question is ambiguous, I will ask a quick scope clarification.]`,
+        },
+      ];
+    });
+  }, [activeTabLabel]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -124,7 +148,11 @@ export default function IlayChatbot({ patientId }: Props) {
       setMessages((prev) => [...prev, placeholderMsg]);
 
       try {
-        await sendChatMessage(updatedMessages, patientId, (token: string) => {
+        await sendChatMessage(
+          updatedMessages,
+          patientId,
+          activeTabLabel,
+          (token: string) => {
           setMessages((prev) => {
             const updated = [...prev];
             const last = updated[updated.length - 1];
@@ -136,7 +164,8 @@ export default function IlayChatbot({ patientId }: Props) {
             }
             return updated;
           });
-        });
+          },
+        );
       } catch {
         setMessages((prev) => {
           const updated = [...prev];
@@ -153,7 +182,7 @@ export default function IlayChatbot({ patientId }: Props) {
         setIsLoading(false);
       }
     },
-    [inputValue, isLoading, messages, patientId],
+    [activeTabLabel, inputValue, isLoading, messages, patientId],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -165,6 +194,8 @@ export default function IlayChatbot({ patientId }: Props) {
 
   const toggleOpen = () => setIsOpen((prev) => !prev);
   const canSend = inputValue.trim().length > 0 && !isLoading;
+  const suggestedPrompts =
+    activeTabLabel === "Cohort Overview" ? COHORT_PROMPTS : SUGGESTED_PROMPTS;
 
   return (
     <>
@@ -174,7 +205,7 @@ export default function IlayChatbot({ patientId }: Props) {
             <img src={AVATAR_SRC} alt="Ilay avatar" className="ilay-header-avatar" />
             <div className="ilay-header-copy">
               <div className="ilay-header-title">Ilay &mdash; Patient #{patientId}</div>
-              <div className="ilay-header-subtitle">AI Clinical Assistant</div>
+              <div className="ilay-header-subtitle">AI Clinical Assistant · {activeTabLabel}</div>
             </div>
             <button onClick={() => setIsOpen(false)} aria-label="Close chat" className="ilay-close">
               <X size={20} />
@@ -187,10 +218,10 @@ export default function IlayChatbot({ patientId }: Props) {
                 <img src={AVATAR_SRC} alt="Ilay" className="ilay-welcome-avatar" />
                 <div className="ilay-welcome-title">Merhaba! I&apos;m Ilay</div>
                 <div className="ilay-welcome-subtitle">
-                  Your AI clinical assistant. Ask me anything about this patient&apos;s data.
+                  Your AI clinical assistant. Ask cohort-level questions, patient-level questions, or comparisons.
                 </div>
                 <div className="ilay-suggestions">
-                  {SUGGESTED_PROMPTS.map((prompt) => (
+                  {suggestedPrompts.map((prompt) => (
                     <button key={prompt} onClick={() => handleSend(prompt)} className="ilay-suggestion" type="button">
                       {prompt}
                     </button>
@@ -235,7 +266,11 @@ export default function IlayChatbot({ patientId }: Props) {
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Ask Ilay about this patient..."
+                placeholder={
+                  activeTabLabel === "Cohort Overview"
+                    ? "Ask about cohort risk patterns or compare with selected patient..."
+                    : "Ask about the selected patient or compare with cohort..."
+                }
                 disabled={isLoading}
                 className="ilay-input"
               />
