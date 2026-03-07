@@ -169,7 +169,7 @@ Integrates: health trend · lab volatility · Critical regime fraction · NLP si
 
 #### Step 1 — Lab z-score per test
 
-For every lab result on a given draw date, a one-sided z-score is computed against the hospital-supplied reference range (or the Ozarda 2014 Turkish population fallback):
+For every lab result on a given draw date, a one-sided z-score is computed against the hospital-supplied reference range (or the NexGene AI fallback reference intervals):
 
 ```
 ref_std = (ref_max − ref_min) / 4          # assumes ±2σ spans 95% interval
@@ -182,7 +182,7 @@ Key design decision: z is **one-sided** — a value comfortably within the range
 
 Reference ranges are sourced in priority order:
 1. Hospital-supplied `REFMIN` / `REFMAX` columns from `labdata.ods`
-2. Fallback: Ozarda 2014 Turkish population RI table (PMID 25153598) for ~20 common analytes
+2. Fallback: NexGene AI reference intervals (Medical Reasoning API, asa-mini model) for ~22 common analytes
 
 #### Step 2 — Organ-system grouping and weighted mean z
 

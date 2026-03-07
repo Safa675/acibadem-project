@@ -397,7 +397,7 @@ ORGAN_WEIGHTS: dict[str, float] = {
 |---|---|---|
 | 13 | Parviainen A, et al. SOFA components have unequal mortality associations. *Acta Anaesth Scand.* 2022 | **35579938** |
 | 14 | Hepatic SOFA most predictive on Day 1 (eICU-CRD + MIMIC-IV). *Crit Care Sci.* 2024 | — |
-| 15 | Ozarda Y, et al. Turkish reference intervals. *Clin Chem Lab Med.* 2014;52(12):1823-33 | **25153598** |
+| 15 | NexGene AI Medical Reasoning API (asa-mini model). Reference intervals queried 2026-03-07 | — |
 | 16 | Thrombocytopenia in ICU: mortality 28.6% vs 13.0% | **24393365** |
 | 17 | Thrombocytopenia meta-analysis (25 studies, 110,411 pts): OR 1.99 | — |
 | 18 | Whelan et al. Sodium abnormalities: Na <125 OR 3.36; Na >140 OR 4.07 | — |

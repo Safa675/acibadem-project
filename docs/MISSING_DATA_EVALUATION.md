@@ -13,7 +13,7 @@ The ILAY pipeline scores **77,204 patients** ("Monitored Patients") based on lab
 - **89.5% of scored patients have no vital signs** → vitals default to 100 (healthy)
 - **99.87% of scored patients have no NLP scores** → NLP weight is redistributed away
 - **79.7% of visit rows are missing blood pressure**; **99.7% are missing SpO2**
-- **20.5% of lab results** (1.4M rows) have no hospital reference ranges; 58.3% of those also have no Ozarda fallback → scored as 0 (invisible to the model)
+- **20.5% of lab results** (1.4M rows) have no hospital reference ranges; 58.3% of those also have no NexGene AI fallback → scored as 0 (invisible to the model)
 
 These defaults inflate health scores for underrepresented patients and reduce the model's discriminative power.
 
@@ -84,7 +84,7 @@ Text availability is moderate (YAKINMA and Muayene Notu present ~90% of the time
 | Condition | Rows | % |
 |---|---:|---:|
 | Hospital REFMIN/REFMAX present | 5,588,875 | 79.5% |
-| Missing — covered by Ozarda 2014 fallback | 601,348 | 8.5% |
+| Missing — covered by NexGene AI fallback | 601,348 | 8.5% |
 | Missing — **no fallback (invisible)** | 842,464 | **12.0%** |
 
 #### Top Tests With Missing Reference Ranges
@@ -216,7 +216,7 @@ Only 100 of 77,204 patients (0.13%) have LLM-computed NLP scores. For the remain
 ### High Priority (Data Recovery)
 
 1. **Add reference ranges for CRP, AST, eGFR, HbA1c, ESR, NLR**  
-   These are clinically critical and have 92-100% ref-range missingness. Adding Ozarda or international reference ranges for these tests would recover ~842K invisible measurements.
+   These are clinically critical and have 92-100% ref-range missingness. Adding NexGene AI or international reference ranges for these tests would recover ~842K invisible measurements.
 
 2. **Use ICD-10 codes as a direct signal**  
    TANIKODU has 100% availability. A direct ICD→severity mapping (already built in `prepare_nlp_data.py`) could replace or supplement the NLP signal without requiring transformer inference.
@@ -257,40 +257,40 @@ All hardcoded thresholds, scoring formulas, default values, and deterministic ma
 
 | Vital | Normal Min | Normal Max | Unit | Source |
 |---|---|---|---|---|
-| systolic_bp | 90.0 | 130.0 | mmHg | WHO ISH 2020 / ESH 2018 |
-| diastolic_bp | 60.0 | 85.0 | mmHg | WHO ISH 2020 / ESH 2018 |
+| systolic_bp | 90.0 | 119.0 | mmHg | NexGene AI |
+| diastolic_bp | 75.0 | 84.0 | mmHg | NexGene AI |
 | pulse | 60.0 | 100.0 | bpm | Standard clinical |
 | spo2 | 95.0 | 100.0 | % | WHO / pulse oximetry |
 
-#### A.1.2 Ozarda 2014 Lab Reference Ranges — Turkish Population Fallback (Lines 67–116)
+#### A.1.2 NexGene AI Lab Reference Ranges — Fallback (Lines 67–116)
 
-Used when hospital-supplied REFMIN/REFMAX are missing. Source: PMID 25153598.
+Used when hospital-supplied REFMIN/REFMAX are missing. Source: NexGene AI Medical Reasoning API (asa-mini model).
 
 | Test (keyword) | Lower | Upper | Unit |
 |---|---|---|---|
-| Albumin | 41.0 | 49.0 | g/L |
-| Protein | 66.0 | 82.0 | g/L |
-| Üre | 2.9 | 7.2 | mmol/L |
-| Kreatinin | 50.0 | 92.0 | μmol/L |
-| Ürik Asit | 166.0 | 458.0 | μmol/L |
-| Bilirubin | 2.7 | 24.1 | μmol/L |
-| Glukoz | 3.96 | 5.88 | mmol/L |
-| Kolesterol | 3.2 | 6.45 | mmol/L |
-| Trigliserid | 0.46 | 3.55 | mmol/L |
-| LDL | 1.32 | 3.92 | mmol/L |
-| HDL | 0.85 | 1.56 | mmol/L |
-| Sodyum | 137.0 | 144.0 | mmol/L |
-| Potasyum | 3.7 | 4.9 | mmol/L |
-| Klor | 99.0 | 107.0 | mmol/L |
-| Kalsiyum | 2.15 | 2.47 | mmol/L |
-| Fosfor | 0.80 | 1.40 | mmol/L |
-| Magnezyum | 0.77 | 1.06 | mmol/L |
-| ALT | 7.0 | 44.0 | U/L |
-| AST | 11.0 | 30.0 | U/L |
-| ALP | 34.0 | 116.0 | U/L |
-| GGT | 7.0 | 69.0 | U/L |
-| LDH | 126.0 | 220.0 | U/L |
-| Amilaz | 34.0 | 119.0 | U/L |
+| Albumin | 35.0 | 50.0 | g/L |
+| Protein | 60.0 | 80.0 | g/L |
+| Üre | 1.8 | 7.1 | mmol/L |
+| Kreatinin | 41.0 | 111.0 | μmol/L |
+| Ürik Asit | 137.0 | 488.0 | μmol/L |
+| Bilirubin | 0.0 | 21.0 | μmol/L |
+| Glukoz | 3.9 | 6.1 | mmol/L |
+| Kolesterol | 3.5 | 5.2 | mmol/L |
+| Trigliserid | 0.6 | 1.69 | mmol/L |
+| LDL | 0.97 | 4.91 | mmol/L |
+| HDL | 1.0 | 1.2 | mmol/L |
+| Sodyum | 135.0 | 145.0 | mmol/L |
+| Potasyum | 3.3 | 5.1 | mmol/L |
+| Klor | 96.0 | 106.0 | mmol/L |
+| Kalsiyum | 2.2 | 2.6 | mmol/L |
+| Fosfor | 0.8 | 1.45 | mmol/L |
+| Magnezyum | 0.7 | 1.0 | mmol/L |
+| ALT | 19.0 | 25.0 | U/L |
+| AST | 10.0 | 44.0 | U/L |
+| ALP | 55.0 | 150.0 | U/L |
+| GGT | 5.0 | 40.0 | U/L |
+| LDH | 105.0 | 280.0 | U/L |
+| Amilaz | 30.0 | 110.0 | U/L |
 
 #### A.1.3 Organ System Keyword Mapping (Lines 119–164)
 
@@ -331,7 +331,7 @@ if value > ref_max:  z = (value - ref_max) / ref_std
 else:                z = 0.0               # within range = healthy
 ```
 
-No reference range and no Ozarda fallback → `z = 0.0` (invisible).
+No reference range and no NexGene AI fallback → `z = 0.0` (invisible).
 
 #### A.1.6 Health Score from Z-Score — Exponential Decay (Lines 298–300)
 

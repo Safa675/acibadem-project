@@ -295,7 +295,7 @@ This approach is endorsed by the SOFA-2 development team (Moreno et al., JAMA Ne
 | 15 | Platelet-INR ratio in COVID-19 | — | AUC 0.94-0.95 for mortality prediction |
 | 16 | Low T3 syndrome in ICU. PMC9354117 | — | Low T3 correlates with severity but is epiphenomenal |
 | 17 | Shang L et al. LFTs in cardiac surgery. Front Cardiovasc Med | — | ALT, AST, bilirubin, albumin: independent risk factors |
-| 18 | Ozarda Y et al. Turkish reference intervals. Clin Chem Lab Med. 2014;52(12):1823-33 | **25153598** | Reference ranges used in the score |
+| 18 | NexGene AI Medical Reasoning API (asa-mini model). Reference intervals queried 2026-03-07 | — | Reference ranges used in the score |
 | 19 | NEWS2 systematic review. PMID 41618411 | **41618411** | NEWS moderate-to-good mortality discrimination |
 | 20 | Bosch NA et al. SOFA predictive validity. Ann Am Thorac Soc. 2022 | — | SOFA validated measure of acute illness severity |
 

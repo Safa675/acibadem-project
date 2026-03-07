@@ -71,7 +71,7 @@ METRICS — FULL REFERENCE
    • Formula: 100 × exp(−0.25 × mean_z) where mean_z is weighted organ-system z-score
    • 100 = perfectly normal, 0 = maximally abnormal
    • Vital weight: 45% (based on NEWS AUROC 0.867)
-   • Turkish population reference ranges (Ozarda 2014, PMID: 25153598)
+    • NexGene AI reference ranges (Medical Reasoning API, asa-mini model)
    • Recalculated at each lab draw → forms a time series
 
 2) PatientRegime™ — 4 states
@@ -343,15 +343,25 @@ def build_patient_context(
     # SUT Cost Estimate (Sağlık Uygulama Tebliği)
     if sut_estimate:
         lines.append(f"\n💵 SUT COST ESTIMATE (Sağlık Uygulama Tebliği):")
-        lines.append(f"  Cost Range: {sut_estimate.cost_min:,.0f} – {sut_estimate.cost_max:,.0f} TRY")
+        lines.append(
+            f"  Cost Range: {sut_estimate.cost_min:,.0f} – {sut_estimate.cost_max:,.0f} TRY"
+        )
         lines.append(f"  Midpoint Estimate: {sut_estimate.cost_mid:,.0f} TRY")
         lines.append(f"  Cost Tier: {sut_estimate.cost_tier}")
         lines.append(f"  Breakdown:")
         bd = sut_estimate.breakdown
-        lines.append(f"    - Lab Tests: {bd.lab_cost_min:,.0f} – {bd.lab_cost_max:,.0f} TRY ({sut_estimate.n_lab_tests} tests)")
-        lines.append(f"    - Visits: {bd.visit_cost_min:,.0f} – {bd.visit_cost_max:,.0f} TRY ({sut_estimate.n_visits} visits)")
-        lines.append(f"    - Prescriptions: {bd.rx_cost_min:,.0f} – {bd.rx_cost_max:,.0f} TRY ({sut_estimate.n_prescriptions} Rx)")
-        lines.append(f"    - Procedures: {bd.procedure_cost_min:,.0f} – {bd.procedure_cost_max:,.0f} TRY ({sut_estimate.n_procedures} procedures)")
+        lines.append(
+            f"    - Lab Tests: {bd.lab_cost_min:,.0f} – {bd.lab_cost_max:,.0f} TRY ({sut_estimate.n_lab_tests} tests)"
+        )
+        lines.append(
+            f"    - Visits: {bd.visit_cost_min:,.0f} – {bd.visit_cost_max:,.0f} TRY ({sut_estimate.n_visits} visits)"
+        )
+        lines.append(
+            f"    - Prescriptions: {bd.rx_cost_min:,.0f} – {bd.rx_cost_max:,.0f} TRY ({sut_estimate.n_prescriptions} Rx)"
+        )
+        lines.append(
+            f"    - Procedures: {bd.procedure_cost_min:,.0f} – {bd.procedure_cost_max:,.0f} TRY ({sut_estimate.n_procedures} procedures)"
+        )
 
     # Comorbidities detail
     if ana_df is not None:

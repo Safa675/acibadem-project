@@ -29,13 +29,8 @@ _logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Reference ranges for vitals (clinical standards, sex-neutral)
-# Sources:
-#   - Blood pressure: WHO ISH 2020 guidelines; ESH/ESC 2018 (normal < 130/85)
-#
-# NOTE: Ozarda 2014 (PMID 25153598) is a pure SERUM BIOCHEMISTRY paper covering 25
-# analytes (proteins, electrolytes, metabolites, enzymes). It contains NO vital-sign
-# data — blood pressure, pulse, and SpO2 are NOT in that paper.
+# Reference ranges for vitals
+# Source: NexGene AI Medical Reasoning API (asa-mini model, queried 2026-03-07)
 #
 # DROPPED (2026-03): pulse and SpO2 removed from active scoring.
 #   - pulse:  96.7% missing across 196K visit rows — near-zero signal
@@ -45,74 +40,60 @@ _logger = logging.getLogger(__name__)
 
 VITAL_REFERENCE_RANGES: dict[str, tuple[float, float]] = {
     # (normal_min, normal_max)
-    "systolic_bp": (90.0, 130.0),  # mmHg; WHO ISH 2020 / ESH 2018 normal range
-    "diastolic_bp": (60.0, 85.0),  # mmHg; WHO ISH 2020 / ESH 2018 normal range
+    "systolic_bp": (90.0, 119.0),  # mmHg; NexGene AI
+    "diastolic_bp": (75.0, 84.0),  # mmHg; NexGene AI
 }
 
 # ---------------------------------------------------------------------------
-# Fallback biochemical reference intervals — Turkish population
-# Source: Ozarda Y et al., Table 4 & 6 (parametric method, 2.5th–97.5th percentile)
-#   Clin Chem Lab Med. 2014 Dec;52(12):1823-33.
-#   PMID: 25153598  |  DOI: https://doi.org/10.1515/cclm-2014-0228
-#   PubMed: https://pubmed.ncbi.nlm.nih.gov/25153598/
+# Fallback biochemical reference intervals
+# Source: NexGene AI Medical Reasoning API (asa-mini model, queried 2026-03-07)
+#   Model: Medical Reasoning Foundational Model v0.4.132
+#   Previously: Ozarda 2014 (PMID 25153598) — replaced with NexGene AI ranges
 #
 # These are used ONLY when the hospital data row has NaN REFMIN/REFMAX.
 # Priority: hospital-supplied ranges > these fallback values.
 #
-# Sex-neutralisation strategy: when the paper gives sex-specific limits,
-# the female lower-limit and male upper-limit are used to create the widest
-# plausible sex-neutral interval (conservative — avoids false alarms).
-#
-# Units match the paper's SI reporting:
+# Units (SI):
 #   Enzymes                  U/L
 #   Electrolytes / metabolites  mmol/L
 #   Creatinine / uric acid   μmol/L
 #   Proteins / albumin       g/L
 #   Bilirubin                μmol/L
 # ---------------------------------------------------------------------------
-OZARDA_2014_REFERENCE_RANGES: dict[str, tuple[float, float]] = {
+NEXGENE_REFERENCE_RANGES: dict[str, tuple[float, float]] = {
     # keyword (case-insensitive substring match) → (lower_limit, upper_limit)
     # --- Proteins ---
-    "Albumin": (41.0, 49.0),  # g/L; Table 6 combined, ages 20–60
-    # (covers both 'Albumin' in data; Albümin variant removed — no match in SUB_CODE)
-    "Protein": (66.0, 82.0),  # g/L; TP, Table 6 combined
+    "Albumin": (35.0, 50.0),  # g/L; NexGene AI
+    "Protein": (60.0, 80.0),  # g/L; total protein, NexGene AI
     # --- Renal ---
-    "Üre": (2.9, 7.2),  # mmol/L; BUN, males <50 (wider)
-    "Kreatinin": (50.0, 92.0),  # μmol/L; female LL (50), male UL (92)
-    "Ürik Asit": (
-        166.0,
-        458.0,
-    ),  # μmol/L; female LL, male UL  (data col is 'Ürik Asit'; ASCII variant removed — no match)
+    "Üre": (1.8, 7.1),  # mmol/L; BUN, NexGene AI
+    "Kreatinin": (41.0, 111.0),  # μmol/L; NexGene AI
+    "Ürik Asit": (137.0, 488.0),  # μmol/L; NexGene AI
     # --- Bilirubin ---
-    "Bilirubin": (2.7, 24.1),  # μmol/L; total, female LL, male UL
+    "Bilirubin": (0.0, 21.0),  # μmol/L; total bilirubin, NexGene AI
     # --- Metabolic ---
-    "Glukoz": (3.96, 5.88),  # mmol/L; strict BMI criteria, Table 6
-    # (data uses 'Glukoz'; Glikoz variant removed — no match in SUB_CODE)
-    "Kolesterol": (3.2, 6.45),  # mmol/L; total cholesterol, age <50 combined
-    "Trigliserid": (
-        0.46,
-        3.55,
-    ),  # mmol/L; female LL, ≥50 male UL (widest)  # FIX: data SUB_CODE is 'Trigliserid' not 'Trigliserit'
-    "LDL": (1.32, 3.92),  # mmol/L; age <50, female LL, male UL
-    "HDL": (0.85, 1.56),  # mmol/L; male LL, female UL (sex-neutral)
+    "Glukoz": (3.9, 6.1),  # mmol/L; fasting glucose, NexGene AI
+    "Kolesterol": (3.5, 5.2),  # mmol/L; total cholesterol, NexGene AI
+    "Trigliserid": (0.6, 1.69),  # mmol/L; NexGene AI
+    "LDL": (0.97, 4.91),  # mmol/L; LDL cholesterol, NexGene AI
+    "HDL": (1.0, 1.2),  # mmol/L; HDL cholesterol, NexGene AI
     # --- Electrolytes ---
-    "Sodyum": (137.0, 144.0),  # mmol/L; Table 6 combined
-    "Potasyum": (3.7, 4.9),  # mmol/L; Table 6 combined
-    "Klor": (99.0, 107.0),  # mmol/L; Table 6 combined
-    "Kalsiyum": (2.15, 2.47),  # mmol/L; Table 6 combined
-    "Fosfor": (0.80, 1.40),  # mmol/L; inorganic phosphate, combined
-    "Magnezyum": (0.77, 1.06),  # mmol/L; Mg, Table 6 combined
+    "Sodyum": (135.0, 145.0),  # mmol/L; NexGene AI
+    "Potasyum": (3.3, 5.1),  # mmol/L; NexGene AI
+    "Klor": (96.0, 106.0),  # mmol/L; NexGene AI
+    "Kalsiyum": (2.2, 2.6),  # mmol/L; NexGene AI
+    "Fosfor": (0.8, 1.45),  # mmol/L; inorganic phosphate, NexGene AI
+    "Magnezyum": (0.7, 1.0),  # mmol/L; NexGene AI
     # --- Liver enzymes ---
-    "ALT": (7.0, 44.0),  # U/L; strict criteria male UL (44); female ~22
-    "AST": (11.0, 30.0),  # U/L; female LL (11), male UL (30)
-    "ALP": (34.0, 116.0),  # U/L; age <50, female LL (34), male UL (116)
-    "GGT": (7.0, 69.0),  # U/L; female LL (7), male UL (69)
+    "ALT": (19.0, 25.0),  # U/L; NexGene AI
+    "AST": (10.0, 44.0),  # U/L; NexGene AI
+    "ALP": (55.0, 150.0),  # U/L; NexGene AI
+    "GGT": (5.0, 40.0),  # U/L; NexGene AI
     # --- Other enzymes ---
-    "LDH": (126.0, 220.0),  # U/L; Table 6 combined
-    "Amilaz": (34.0, 119.0),  # U/L; AMY, Table 6 combined
-    # (data uses 'Amilaz'; Amylaz variant removed — no match in SUB_CODE)
+    "LDH": (105.0, 280.0),  # U/L; NexGene AI
+    "Amilaz": (30.0, 110.0),  # U/L; amylase, NexGene AI
     # NOTE: CRP, WBC, Hemoglobin, Platelets, HbA1c, TSH, INR, PT, aPTT are
-    # NOT in the Ozarda 2014 paper — those rely on the hospital's own REFMIN/REFMAX.
+    # not covered — those rely on the hospital's own REFMIN/REFMAX.
 }
 
 # Organ system groupings for weighted health index
@@ -242,11 +223,11 @@ class HealthIndexBuilder:
         ref_mean and ref_std derived from min/max (assumes ±2σ spans the range).
 
         When REFMIN/REFMAX are missing from the hospital data, falls back to
-        OZARDA_2014_REFERENCE_RANGES (Turkish population, PMID 25153598).
+        NEXGENE_REFERENCE_RANGES (NexGene AI Medical Reasoning API).
         """
-        # Fallback to Ozarda 2014 Turkish population RIs when hospital data lacks ranges
+        # Fallback to NexGene AI reference ranges when hospital data lacks ranges
         if (pd.isna(ref_min) or pd.isna(ref_max) or ref_max <= ref_min) and test_name:
-            for keyword, (lo, hi) in OZARDA_2014_REFERENCE_RANGES.items():
+            for keyword, (lo, hi) in NEXGENE_REFERENCE_RANGES.items():
                 if keyword.lower() in test_name.lower():
                     ref_min, ref_max = lo, hi
                     break
@@ -299,9 +280,7 @@ class HealthIndexBuilder:
             if not (pd.isna(rim) or pd.isna(rax) or rax <= rim):
                 return True  # hospital-supplied range present
             name = row["test_name"]
-            return any(
-                kw.lower() in name.lower() for kw in OZARDA_2014_REFERENCE_RANGES
-            )
+            return any(kw.lower() in name.lower() for kw in NEXGENE_REFERENCE_RANGES)
 
         day_labs["has_ref_range"] = day_labs.apply(_has_ref_range, axis=1)
         n_no_ref = int((~day_labs["has_ref_range"]).sum())
@@ -532,18 +511,17 @@ class HealthIndexBuilder:
         return result
 
     @staticmethod
-    def _build_ozarda_fallback_map(
+    def _build_nexgene_fallback_map(
         unique_tests: np.ndarray,
     ) -> dict[str, tuple[float, float]]:
-        """Map each unique test name → Ozarda fallback (ref_min, ref_max)."""
-        lower_ozarda = [
-            (kw.lower(), lo, hi)
-            for kw, (lo, hi) in OZARDA_2014_REFERENCE_RANGES.items()
+        """Map each unique test name → NexGene AI fallback (ref_min, ref_max)."""
+        lower_nexgene = [
+            (kw.lower(), lo, hi) for kw, (lo, hi) in NEXGENE_REFERENCE_RANGES.items()
         ]
         result: dict[str, tuple[float, float]] = {}
         for test_name in unique_tests:
             tn_lower = test_name.lower()
-            for kw_lower, lo, hi in lower_ozarda:
+            for kw_lower, lo, hi in lower_nexgene:
                 if kw_lower in tn_lower:
                     result[test_name] = (lo, hi)
                     break
@@ -552,10 +530,10 @@ class HealthIndexBuilder:
     @staticmethod
     def _build_has_ref_map(
         unique_tests: np.ndarray,
-        ozarda_map: dict[str, tuple[float, float]],
+        nexgene_map: dict[str, tuple[float, float]],
     ) -> dict[str, bool]:
-        """Map each unique test name → whether Ozarda has a fallback for it."""
-        return {tn: tn in ozarda_map for tn in unique_tests}
+        """Map each unique test name → whether NexGene has a fallback for it."""
+        return {tn: tn in nexgene_map for tn in unique_tests}
 
     def _vectorised_lab_scores(self, lab_df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -577,34 +555,34 @@ class HealthIndexBuilder:
         # --- Step 1: Precompute lookup maps from unique test names (once) ---
         unique_tests = df["test_name"].unique()
         test_organ_map = self._build_test_organ_map(unique_tests)
-        ozarda_map = self._build_ozarda_fallback_map(unique_tests)
-        has_ref_map = self._build_has_ref_map(unique_tests, ozarda_map)
+        nexgene_map = self._build_nexgene_fallback_map(unique_tests)
+        has_ref_map = self._build_has_ref_map(unique_tests, nexgene_map)
 
         _logger.info(
-            "Precomputed maps for %d unique tests (organ: %d matched, ozarda: %d fallbacks)",
+            "Precomputed maps for %d unique tests (organ: %d matched, nexgene: %d fallbacks)",
             len(unique_tests),
             sum(1 for v in test_organ_map.values() if v != "other"),
-            len(ozarda_map),
+            len(nexgene_map),
         )
 
         # --- Step 2: Vectorised organ system classification ---
         df["organ_system"] = df["test_name"].map(test_organ_map)
 
-        # --- Step 3: Fill missing ref ranges from Ozarda fallback ---
+        # --- Step 3: Fill missing ref ranges from NexGene AI fallback ---
         # Build Series-aligned fallback arrays
-        ozarda_min = df["test_name"].map(
-            lambda tn: ozarda_map[tn][0] if tn in ozarda_map else np.nan
+        nexgene_min = df["test_name"].map(
+            lambda tn: nexgene_map[tn][0] if tn in nexgene_map else np.nan
         )
-        ozarda_max = df["test_name"].map(
-            lambda tn: ozarda_map[tn][1] if tn in ozarda_map else np.nan
+        nexgene_max = df["test_name"].map(
+            lambda tn: nexgene_map[tn][1] if tn in nexgene_map else np.nan
         )
         needs_fallback = (
             df["ref_min"].isna()
             | df["ref_max"].isna()
             | (df["ref_max"] <= df["ref_min"])
         )
-        df.loc[needs_fallback, "ref_min"] = ozarda_min[needs_fallback]
-        df.loc[needs_fallback, "ref_max"] = ozarda_max[needs_fallback]
+        df.loc[needs_fallback, "ref_min"] = nexgene_min[needs_fallback]
+        df.loc[needs_fallback, "ref_max"] = nexgene_max[needs_fallback]
 
         # --- Step 4: Vectorised z-score computation (numpy, no Python loops) ---
         value = df["value"].values.astype(np.float64)
@@ -692,7 +670,7 @@ class HealthIndexBuilder:
         if n_no_ref > 0:
             pct = n_no_ref / len(df) * 100
             _logger.warning(
-                "%d rows (%.1f%%) have no reference range (hospital or Ozarda) — scored as z=0",
+                "%d rows (%.1f%%) have no reference range (hospital or NexGene) — scored as z=0",
                 n_no_ref,
                 pct,
             )
