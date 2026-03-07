@@ -609,11 +609,14 @@ def predict_care_duration_narrative(profile: PatientOutcomeProfile) -> str:
 
 
 def predict_eci_narrative(
-    eci_data: dict, profile: PatientOutcomeProfile | None = None
+    eci_data: dict,
+    profile: PatientOutcomeProfile | None = None,
+    sut_estimate=None,
 ) -> str:
     """
     Generate a clinical narrative for the Expected Cost Intensity (ECI) of a patient.
     Rule-based interpretation of the ECI score and its 4 percentile-ranked components.
+    Optionally includes SUT cost estimate if available.
     """
     pid = eci_data.get("patient_id", "Unknown")
     score = eci_data.get("eci_score")
@@ -665,5 +668,12 @@ def predict_eci_narrative(
             lines.append(
                 f"Total care span: {profile.total_care_days:.0f} days ({profile.total_care_days / 365:.1f} years)"
             )
+
+    # SUT cost estimate
+    if sut_estimate is not None:
+        lines.append(
+            f"SUT Cost Estimate: {sut_estimate.cost_min:,.0f} – {sut_estimate.cost_max:,.0f} TRY "
+            f"(midpoint: {sut_estimate.cost_mid:,.0f} TRY, tier: {sut_estimate.cost_tier})"
+        )
 
     return "\n".join(lines)
