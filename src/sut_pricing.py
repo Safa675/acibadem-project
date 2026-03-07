@@ -87,6 +87,11 @@ SUT_LAB_PRICES: dict[str, tuple[float, float]] = {
     "aPTT": (12.0, 22.0),
 }
 
+# Pre-build lowercase index for O(1) partial matching
+_SUT_LAB_PRICES_LOWER: dict[str, tuple[float, float]] = {
+    k.lower(): v for k, v in SUT_LAB_PRICES.items()
+}
+
 # Default price for unlisted lab tests
 SUT_LAB_DEFAULT: tuple[float, float] = (8.0, 15.0)
 
@@ -242,14 +247,10 @@ def _estimate_lab_costs(
         test_counts = patient_labs["test_name"].value_counts()
         for test_name, count in test_counts.items():
             test_str = str(test_name).strip()
-            # Try exact match first, then partial match
+            # Try exact match first, then lowercase match
             price = SUT_LAB_PRICES.get(test_str)
             if price is None:
-                # Partial match: check if any catalog key is in the test name
-                for catalog_name, catalog_price in SUT_LAB_PRICES.items():
-                    if catalog_name.lower() in test_str.lower():
-                        price = catalog_price
-                        break
+                price = _SUT_LAB_PRICES_LOWER.get(test_str.lower())
             if price is None:
                 price = SUT_LAB_DEFAULT
             total_min += price[0] * count
@@ -300,7 +301,7 @@ def _estimate_visit_costs(
         los = row.get("los_days")
         if pd.notna(los) and float(los) >= 1:
             # Inpatient: charge per day
-            days = max(float(los), 1.0)
+            days = float(los)
             price = SUT_VISIT_PRICES["inpatient_day"]
             total_min += price[0] * days
             total_max += price[1] * days
@@ -392,14 +393,10 @@ def _estimate_procedure_costs(
         if col_name in patient_data.columns:
             val = latest.get(col_name)
             if pd.notna(val) and val:
-                # Check for non-empty string or truthy value
-                if isinstance(val, str) and len(val.strip()) >= 1:
-                    has_condition = True
-                elif not isinstance(val, str) and val > 0:
-                    has_condition = True
-                else:
-                    has_condition = False
-
+                has_condition = (
+                    (isinstance(val, str) and len(val.strip()) >= 1)
+                    or (not isinstance(val, str) and val > 0)
+                )
                 if has_condition and sut_key in SUT_COMORBIDITY_PROCEDURE_COSTS:
                     price = SUT_COMORBIDITY_PROCEDURE_COSTS[sut_key]
                     total_min += price[0]
