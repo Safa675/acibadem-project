@@ -381,7 +381,7 @@ export default function CohortOverview({ data, loading, onPageChange }: Props) {
           <div {...reveal.staggerAttrs} className={`frost-panel ${reveal.staggerClass}`} style={{ ...reveal.staggerStyle, padding: 16, flex: 1 }}>
             <h3 className="section-heading-accent" style={{ margin: "0 0 8px", fontSize: 15, color: "#fff" }}>
               <span className="section-label-with-info">
-                Rating Distribution
+                Credit Risk Rating Distribution
                 <InfoTooltip metricId="cohort.rating_distribution" />
               </span>
             </h3>

@@ -40,6 +40,7 @@ from src import (
     profiles_to_dataframe,
     compute_feature_correlations,
     predict_care_duration_narrative,
+    predict_eci_narrative,
     run_all_validations,
     validation_summary_df,
 )
@@ -747,12 +748,16 @@ class ChatRequest(BaseModel):
 
 @app.get("/api/patients")
 def get_patients():
-    """Return total patient count + a small initial set of IDs."""
+    """Return total patient count + a small initial set of IDs with metadata."""
     ctx = _load_pipeline()
     all_ids = sorted(ctx["regimes"].keys())
+    meta_lookup = {m["patient_id"]: m for m in ctx.get("patient_meta", [])}
+    initial_ids = all_ids[:20]
+    meta_list = [meta_lookup.get(pid, {"patient_id": pid}) for pid in all_ids]
     return {
-        "patients": all_ids[:20],
+        "patients": initial_ids,
         "total": len(all_ids),
+        "patient_meta": meta_list,
     }
 
 
@@ -918,7 +923,7 @@ def get_cohort(
     # Regime state distribution (pre-cached at startup)
     regime_dist = ctx["kpi_regime_dist"]
 
-    # Cohort scatter data — stratified sample (max 2000 points)
+    # Cohort scatter data — NLP-scored patients only (nlp_score != 50.0 midpoint)
     scatter_data = []
     scatter_total = 0
     if not composites.empty:
@@ -933,9 +938,12 @@ def get_cohort(
         else:
             merged["eci_score"] = 30.0
 
+        # Filter to patients with real NLP scores (50.0 = normalized zero = no NLP)
+        merged = merged[merged["nlp_score"] != 50.0]
         scatter_total = len(merged)
-        MAX_SCATTER = 2000
 
+        # Cap at 12,000 points for browser performance
+        MAX_SCATTER = 12000
         if len(merged) > MAX_SCATTER:
             # Stratified sample by rating to preserve distribution
             sampled_frames = []
@@ -1245,8 +1253,8 @@ def get_patient_outcome(patient_id: str):
         else None,
     }
 
-    # Narrative
-    narrative = predict_care_duration_narrative(profile)
+    # Narrative — ECI-based (replaces old CSI narrative)
+    narrative = predict_eci_narrative(eci_data, profile)
 
     # ECI component breakdown (replaces old CSI feature contributions)
     feature_bar = []
@@ -1429,6 +1437,7 @@ async def chat(req: ChatRequest):
             ana_df=ctx["ana_df"],
             lab_df=ctx["lab_df"],
             rec_df=ctx["rec_df"],
+            eci_data=ctx["eci_by_pid"].get(pid),
         )
         cohort_context = build_cohort_context(
             active_tab=req.active_tab,

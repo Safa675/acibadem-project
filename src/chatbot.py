@@ -119,19 +119,23 @@ METRICS — FULL REFERENCE
      - B/CCC (<25): High risk — urgent clinical attention required
    • Finance analogy: credit rating (S&P, Moody's)
 
-6) CSI — Clinical Severity Index — 0 to 100
-   • Predicts healthcare utilization intensity.
-   • 6 features with exact weights (each sub-score normalized 0–100 before weighting):
-     - Health Score Trend (25%): slope mapped so −5/obs → 100, +5/obs → 0
-     - Lab Volatility (20%): std dev mapped so 0 → 0, 20+ → 100
-     - Critical Regime Fraction (20%): % time in Critical state × 100
-     - NLP Signal (15%): NLP score mapped so −1 → 100, +1 → 0
-     - Prescription Intensity (10%): Rx velocity mapped so 0 → 0, 10+/mo → 100
-     - Comorbidity Burden (10%): comorbidity count mapped so 0 → 0, 4+ → 100
-   • The SELECTED PATIENT DATA section includes the exact point contribution of EACH factor
-     (feature_contributions dict). USE THESE NUMBERS when explaining the CSI.
-   • Tiers: LOW (0–25), MODERATE (25–50), HIGH (50–75), CRITICAL (75–100)
-   • 0 = minimal burden, 100 = maximum burden
+6) ECI — Expected Cost Intensity — 0 to 100
+   • Estimates healthcare expenditure risk using cohort-relative percentile ranking.
+   • 4 equally weighted components (25% each, percentile-ranked across cohort):
+     - Visit Intensity: visits per month, cohort-ranked
+     - Medication Burden: drug count + change velocity, cohort-ranked
+     - Diagnostic Intensity: lab tests per month, cohort-ranked
+     - Clinical Trajectory: health trend + NLP signal, cohort-ranked
+   • Rating tiers (higher score = worse — more expenditure risk):
+     - AAA (0–14): Minimal expenditure risk
+     - AA (15–29): Low expenditure risk
+     - A (30–44): Moderate expenditure risk
+     - BBB (45–59): Elevated expenditure risk
+     - BB (60–74): High expenditure risk
+     - B/CCC (75–100): Very high expenditure risk
+   • The SELECTED PATIENT DATA section includes the exact score of EACH component.
+     USE THESE NUMBERS when explaining the ECI.
+   • 0 = minimal cost burden, 100 = maximum cost burden
 
 ═══════════════════════════════════════════
 COMORBIDITY COLUMNS IN DATA
@@ -177,13 +181,11 @@ RESPONSE RULES (YOU MUST FOLLOW THESE STRICTLY):
 """
 
 
-_CSI_FACTOR_LABELS = {
-    "health_trend": "Health Score Trend (25%)",
-    "lab_volatility": "Lab Volatility (20%)",
-    "critical_fraction": "Critical Regime Fraction (20%)",
-    "nlp_signal": "NLP Signal (15%)",
-    "prescription_intensity": "Prescription Intensity (10%)",
-    "comorbidity_burden": "Comorbidity Burden (10%)",
+_ECI_COMPONENT_LABELS = {
+    "visit_intensity": "Visit Intensity (25%)",
+    "med_burden": "Medication Burden (25%)",
+    "diagnostic_intensity": "Diagnostic Intensity (25%)",
+    "trajectory_cost": "Clinical Trajectory (25%)",
 }
 
 
@@ -258,6 +260,7 @@ def build_patient_context(
     ana_df=None,
     lab_df=None,
     rec_df=None,
+    eci_data: dict | None = None,
 ) -> str:
     """Build a text block summarizing the current patient's data for the LLM."""
     lines = [f"\n═══ SELECTED PATIENT DATA: Patient #{patient_id} ═══"]
@@ -311,25 +314,17 @@ def build_patient_context(
         lines.append(f"  VaR %: {var_result.var_pct:.1f}%")
         lines.append(f"  Risk Tier: {var_result.risk_tier} — {var_result.risk_label}")
 
-    # CSI — full breakdown including per-factor contributions
-    if profile:
-        lines.append(f"\n🎯 CLINICAL SEVERITY INDEX (CSI):")
-        lines.append(f"  CSI Score: {profile.csi_score:.1f}/100")
-        lines.append(f"  CSI Tier: {profile.csi_tier}")
-        lines.append(f"  CSI Label: {getattr(profile, 'csi_label', 'N/A')}")
-        lines.append(f"  Critical Episodes: {profile.n_critical_episodes}")
-        lines.append(f"  Critical Fraction: {profile.critical_fraction:.1%}")
-        lines.append(f"  Mean NLP Composite: {profile.mean_nlp_composite:.3f}")
-
-        # Per-factor weighted point contributions — the key data for precise explanations
-        feature_contribs = getattr(profile, "feature_contributions", {})
-        if feature_contribs:
-            lines.append(
-                f"  CSI Factor Contributions (weighted points out of total {profile.csi_score:.1f}):"
-            )
-            for key, label in _CSI_FACTOR_LABELS.items():
-                val = feature_contribs.get(key, 0.0)
-                lines.append(f"    - {label}: {val:.2f} pts")
+    # ECI — Expected Cost Intensity breakdown
+    if eci_data:
+        lines.append(f"\n💰 EXPECTED COST INTENSITY (ECI):")
+        lines.append(f"  ECI Score: {eci_data.get('eci_score', 'N/A')}/100")
+        lines.append(f"  ECI Rating: {eci_data.get('eci_rating', 'N/A')}")
+        lines.append(f"  ECI Label: {eci_data.get('eci_rating_label', 'N/A')}")
+        lines.append(f"  Component Scores (each 0–100, percentile-ranked):")
+        for key, label in _ECI_COMPONENT_LABELS.items():
+            val = eci_data.get(key)
+            if val is not None:
+                lines.append(f"    - {label}: {float(val):.1f}")
 
     # Comorbidities detail
     if ana_df is not None:
